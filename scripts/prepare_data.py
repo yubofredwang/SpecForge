@@ -102,6 +102,12 @@ def process_sharegpt_row(row) -> Dict:
     return row, skipped_count
 
 
+def load_dataset_from_path(data_path: Path):
+    suffix = data_path.suffix.split(".")[1]
+    ds = load_dataset(suffix, data_files=str(data_path), split="train")
+    return ds
+
+
 def main():
     args = parse_args()
     # load dataset
@@ -112,11 +118,8 @@ def main():
         if args.data_path is None:
             ds = load_dataset("Aeala/ShareGPT_Vicuna_unfiltered")["train"]
         else:
-            # Parse suffix
-            data_path = Path(args.data_path)
-            suffix = data_path.suffix.split(".")[1]
-            ds = load_dataset(suffix, data_files=str(data_path), split="train")
-            print("Loading dataset from custom data path: ", data_path)
+            print("Loading dataset from custom data path: ", args.data_path)
+            ds = load_dataset_from_path(Path(args.data_path))
         proc_fn = process_sharegpt_row
     else:
         raise ValueError(
