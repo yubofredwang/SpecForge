@@ -72,6 +72,15 @@ To install this project, you can simply run the following command.
 pip install -v .
 ```
 
+## Available Models
+
+| Base Model  | Draft Model  | \# Parameters | 🚀Speedup | Acceptance Length(tokens) |
+|------|------|------|------|------|
+| Llama-4-Maverick-17B-128E-Instruct | [lmsys/sglang-EAGLE3-Llama-4-Maverick-17B-128E-Instruct-v1](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Maverick-17B-128E-Instruct-v1) | 1.88B | 2.1x | 3.430 |
+| Llama-4-Scout-17B-16E-Instruct | [lmsys/sglang-EAGLE3-Llama-4-Scout-17B-16E-Instruct-v1](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Scout-17B-16E-Instruct-v1) | 1.88B | 2.1x | 3.028 |
+| Qwen3-235B-A22B | [Qwen3-235B-A22B-EAGLE3](https://huggingface.co/lmsys/Qwen3-235B-A22B-EAGLE3) | 1.21B | 1.9x | 3.538 |
+
+
 ## 📝 Data Preparation
 
 In this section, we will introduce how to prepare the dataset for both online and offline training. As mentioned in the [Overview](#-overview) section, online training only requires the raw dataset while offline training requires the hidden states generated from the target model. In the section below, we will introduce how to prepare both the raw dataset and the hidden states.
