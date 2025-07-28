@@ -30,7 +30,7 @@ torchrun \
 #     --standalone \
 #     --nproc_per_node $NUM_GPUS \
 #     $ROOT_DIR/scripts/train_eagle3_online.py \
-#     --target-model-path /root/model/Qwen3-235B-A22B \
+#     --target-model-path Qwen/Qwen3-235B-A22B \
 #     --draft-model-config $ROOT_DIR/configs/qwen3-235B-A22B-eagle3.json \
 #     --train-data-path $ROOT_DIR/cache/dataset/sharegpt.jsonl \
 #     --output-dir $ROOT_DIR/outputs/Qwen3-235B-A22B-eagle3 \
