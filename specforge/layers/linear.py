@@ -14,7 +14,7 @@ class RowParallelLinear(nn.Module):
         bias=True,
         device=None,
         dtype=None,
-        is_attn=False,
+        kv_head_replicas=False,
     ):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -25,7 +25,7 @@ class RowParallelLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
 
-        if self.tp_size > 4 and is_attn:
+        if kv_head_replicas:
             self.in_features_per_shard = in_features
         else:
             self.in_features_per_shard = in_features // self.tp_size
@@ -73,7 +73,7 @@ class ColumnParallelLinear(nn.Module):
         bias=True,
         device=None,
         dtype=None,
-        is_attn=False,
+        kv_head_replicas=False,
     ):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -83,7 +83,7 @@ class ColumnParallelLinear(nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
-        if self.tp_size > 4 and is_attn:
+        if kv_head_replicas:
             self.out_features_per_shard = out_features
         else:
             self.out_features_per_shard = out_features // self.tp_size

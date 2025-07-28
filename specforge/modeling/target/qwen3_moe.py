@@ -160,34 +160,34 @@ class Qwen3MoeAttention(nn.Module):
             self.num_kv_heads = 1
             self.num_kv_head_replicas = self.tp_size // self.total_num_kv_heads
             self.num_key_value_groups = self.num_heads // self.num_kv_heads
+            self.kv_head_replicas = True
         else:
             self.num_kv_heads = self.total_num_kv_heads
             self.num_kv_head_replicas = 1
             self.num_key_value_groups = config.num_attention_heads // self.num_kv_heads
+            self.kv_head_replicas = False
 
         self.q_proj = ColumnParallelLinear(
             config.hidden_size,
             config.num_attention_heads * self.head_dim,
             bias=config.attention_bias,
-            is_attn=False,
         )
         self.k_proj = ColumnParallelLinear(
             config.hidden_size,
             self.num_kv_heads * self.head_dim,
             bias=config.attention_bias,
-            is_attn=True,
+            kv_head_replicas=self.kv_head_replicas,
         )
         self.v_proj = ColumnParallelLinear(
             config.hidden_size,
             self.num_kv_heads * self.head_dim,
             bias=config.attention_bias,
-            is_attn=True,
+            kv_head_replicas=self.kv_head_replicas,
         )
         self.o_proj = RowParallelLinear(
             config.num_attention_heads * self.head_dim,
             config.hidden_size,
             bias=config.attention_bias,
-            is_attn=False,
         )
         self.q_norm = Qwen3MoeRMSNorm(
             self.head_dim, eps=config.rms_norm_eps
