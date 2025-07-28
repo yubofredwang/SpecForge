@@ -72,13 +72,17 @@ To install this project, you can simply run the following command.
 pip install -v .
 ```
 
-## Available Models
+## 🤖 Available Models
 
-| Base Model  | Draft Model  | \# Parameters | 🚀Speedup | Acceptance Length(tokens) |
-|------|------|------|------|------|
-| Llama-4-Maverick-17B-128E-Instruct | [lmsys/sglang-EAGLE3-Llama-4-Maverick-17B-128E-Instruct-v1](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Maverick-17B-128E-Instruct-v1) | 1.88B | 2.1x | 3.430 |
-| Llama-4-Scout-17B-16E-Instruct | [lmsys/sglang-EAGLE3-Llama-4-Scout-17B-16E-Instruct-v1](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Scout-17B-16E-Instruct-v1) | 1.88B | 2.1x | 3.028 |
-| Qwen3-235B-A22B | [Qwen3-235B-A22B-EAGLE3](https://huggingface.co/lmsys/Qwen3-235B-A22B-EAGLE3) | 1.21B | 1.9x | 3.538 |
+<div align="center">
+
+| 🎯 Base Model | 📦 Draft Model | 🔢 Parameters | 🚀 Speedup | 📏 Avg Acceptance Length |
+|:--------------|:---------------|:-------------:|:-----------:|:------------------------:|
+| Llama-4-Maverick-17B-128E-Instruct | [EAGLE3-Llama-4-Maverick](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Maverick-17B-128E-Instruct-v1) | `1.88B` | **2.1x** | `3.430` |
+| Llama-4-Scout-17B-16E-Instruct | [EAGLE3-Llama-4-Scout](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Scout-17B-16E-Instruct-v1) | `1.88B` | **2.1x** | `3.028` |
+| Qwen3-235B-A22B | [Qwen3-235B-A22B-EAGLE3](https://huggingface.co/lmsys/Qwen3-235B-A22B-EAGLE3) | `1.21B` | **1.9x** | `3.538` |
+
+</div>
 
 
 ## 📝 Data Preparation
