@@ -71,3 +71,8 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(
         inverted_mask.to(torch.bool), torch.finfo(dtype).min
     )
+
+
+if __name__ == "__main__":
+    mask = torch.tensor([[0, 1, 1], [1, 0, 1], [1, 1, 0]])
+    print(_expand_mask(mask, torch.float32, 4))

@@ -12,6 +12,8 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictTy
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from .utils import profile_schedule
+
 from specforge import (
     AutoDistributedTargetModel,
     AutoDraftModelConfig,
@@ -78,6 +80,10 @@ def parse_args():
     parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-name", type=str, default=None)
     parser.add_argument("--wandb-key", type=str, default=None)
+
+
+    # profiler args
+    parser.add_argument("--enable-profiler", action="store_true")
 
     args = parser.parse_args()
     return args
@@ -258,6 +264,19 @@ def main():
 
     dist.barrier()
 
+    # TODO: Allow profiling on different ranks
+    profiler = None
+    if args.enable_profiler and dist.get_rank() == 0:
+        profiler = torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            schedule=profiler_schedule(),
+            with_stack=True,
+            profile_memory=True,
+            record_shapes=True,
+        )
+        profiler.start()
+        print(f"Started PyTorch profiler")
+
     # start running
     print_on_rank0(f"Starting training from epoch {start_epoch}")
     for epoch in range(start_epoch, args.num_epochs):
@@ -390,6 +409,10 @@ def main():
                     )
                     print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
                 dist.barrier()
+
+    if profiler is not None:
+        profiler.stop()
+        export_profiler_trace(profiler)
 
     destroy_distributed()
 

@@ -59,9 +59,9 @@ def answer_mt_bench(s, question_1, question_2):
 
 def main(args):
     # Construct prompts
-    url = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
-    download_and_cache_file(url, filename="mtbench.jsonl")
-    questions = list(read_jsonl("mtbench.jsonl"))
+    # url = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
+    # download_and_cache_file(url, filename="mtbench.jsonl")
+    questions = list(read_jsonl("/shared/user/mt_bench.jsonl"))
     questions = questions[: args.num_questions]
     arguments = [
         {"question_1": q["turns"][0], "question_2": q["turns"][1]} for q in questions

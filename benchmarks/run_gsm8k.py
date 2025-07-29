@@ -44,9 +44,7 @@ def main(args):
     set_default_backend(select_sglang_backend(args))
 
     # Read data
-    data_path = "gsm8k.jsonl"
-    url = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
-    data_path = download_and_cache_file(url)
+    data_path = "/shared/public/data/gsm8k/test.jsonl"
     lines = list(read_jsonl(data_path))
 
     # Construct prompts
