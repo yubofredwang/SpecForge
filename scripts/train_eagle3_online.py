@@ -12,8 +12,6 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictTy
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from .utils import profile_schedule
-
 from specforge import (
     AutoDistributedTargetModel,
     AutoDraftModelConfig,
@@ -27,7 +25,13 @@ from specforge.data import (
 )
 from specforge.distributed import destroy_distributed, get_dp_group, init_distributed
 from specforge.lr_scheduler import CosineAnnealingWarmupLR
-from specforge.utils import get_last_checkpoint, print_with_rank, rank_0_priority
+from specforge.utils import (
+    get_last_checkpoint,
+    print_with_rank,
+    rank_0_priority,
+    profiler_schedule,
+    trace_handler,
+)
 
 
 def parse_args():
@@ -264,18 +268,29 @@ def main():
 
     dist.barrier()
 
-    # TODO: Allow profiling on different ranks
-    profiler = None
-    if args.enable_profiler and dist.get_rank() == 0:
-        profiler = torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=profiler_schedule(),
-            with_stack=True,
-            profile_memory=True,
-            record_shapes=True,
-        )
-        profiler.start()
-        print(f"Started PyTorch profiler")
+
+    # Profiler logic
+    profiler_path = os.path.join(args.output_dir, "profiler_results")
+    max_steps = len(train_dataloader)
+    if args.enable_profiler:
+        if dist.get_rank() == 0:
+            profiler = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CUDA],
+                schedule=profiler_schedule(),
+                with_stack=True,
+                profile_memory=True,
+                on_trace_ready=trace_handler(profiler_path),
+                record_shapes=True,
+            )
+            profiler.start()
+            print(f"Started PyTorch profiler")
+        else:
+            profiler = None
+
+        # Since profiling set num_epochs = 1
+        # Set memory usage
+        args.num_epochs = 1
+        max_steps = 10        
 
     # start running
     print_on_rank0(f"Starting training from epoch {start_epoch}")
@@ -285,8 +300,15 @@ def main():
         draft_model.train()
         epoch_acces = [[] for _ in range(eagle3_model.module.length)]
         epoch_plosses = [[] for _ in range(eagle3_model.module.length)]
+        epoch_steps = 0
 
         for data in tqdm(train_dataloader, desc=f"Training Epoch {epoch}"):
+            if profiler is not None:
+                profiler.step()
+
+            if epoch_steps == 8:
+                torch.cuda.memory._record_memory_history(max_entries=100000)
+
             optimizer.zero_grad()
             plosses, _, acces = eagle3_model(
                 input_ids=data["input_ids"].cuda(),
@@ -312,6 +334,18 @@ def main():
             epoch_plosses = [
                 epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))
             ]
+            epoch_steps += 1
+
+            if epoch_steps == 8:
+                if dist.get_rank() == 0:
+                    try:
+                        torch.cuda.memory._dump_snapshot(f"{args.output_dir}/memory_snapshot.pickle")
+                    except Exception as e:
+                        print_on_rank0(f"Failed to capture memory snapshot: {e}")
+                    # Stop recording memory snapshot history.
+                    torch.cuda.memory._record_memory_history(enabled=None)
+            if epoch_steps >= max_steps:
+                break
 
         for i in range(len(epoch_acces)):
             acc_i = torch.tensor(epoch_acces[i]).cuda().mean()
@@ -410,9 +444,6 @@ def main():
                     print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
                 dist.barrier()
 
-    if profiler is not None:
-        profiler.stop()
-        export_profiler_trace(profiler)
 
     destroy_distributed()
 

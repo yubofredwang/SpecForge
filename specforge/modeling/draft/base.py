@@ -62,8 +62,8 @@ class Eagle3DraftModel(PreTrainedModel, ABC):
         """
         pass
 
+    @staticmethod
     def prepare_decoder_attention_mask(
-        self,
         attention_mask: torch.Tensor,
         hidden_states: torch.Tensor,
         batch_size: int,

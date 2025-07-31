@@ -179,6 +179,7 @@ class OnlineEagle3Model(Eagle3Model):
                 dtype=torch.bool,
                 device=hidden_states.device,
             )
+        # TODO(yubwang) No need for prepare_decoder_attention_mask if using flex attention
         attention_mask = self.draft_model.prepare_decoder_attention_mask(
             attention_mask=attention_mask,
             hidden_states=hidden_states,

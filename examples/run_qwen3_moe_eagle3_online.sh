@@ -10,7 +10,7 @@ torchrun \
     --standalone \
     --nproc_per_node $NUM_GPUS \
     $ROOT_DIR/scripts/train_eagle3_online.py \
-    --target-model-path /shared/public/elr-models/Qwen/Qwen3-30B-A3B/ \
+    --target-model-path /shared/public/elr-models/Qwen/Qwen3-30B-A3B/67b0e0ca24de1b8cedea4c97f1925df66d72bee1 \
     --draft-model-config $ROOT_DIR/configs/qwen3-30B-A3B-eagle3.json \
     --train-data-path $ROOT_DIR/cache/dataset/sharegpt.jsonl \
     --output-dir $ROOT_DIR/outputs/Qwen3-30B-A3B-eagle3 \
