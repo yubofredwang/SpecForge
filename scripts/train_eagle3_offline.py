@@ -22,7 +22,7 @@ from specforge.data import (
 from specforge.distributed import destroy_distributed, get_dp_group, init_distributed
 from specforge.lr_scheduler import CosineAnnealingWarmupLR
 from specforge.modeling.target.target_head import TargetHead
-from specforge.utils import print_with_rank, rank_0_priority
+from specforge.utils import print_with_rank, rank_0_priority, generate_vocab_cache_key
 
 
 def parse_args():
@@ -131,23 +131,26 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.target_model_path)
 
     # convert to dataloader
-    cache_key = hashlib.md5(args.train_data_path.encode()).hexdigest()
     train_dataset = load_dataset("json", data_files=args.train_data_path)["train"]
     with rank_0_priority():
-        train_eagle3_dataset_tmp = build_eagle3_dataset(
+        dataset_cache_key = hashlib.md5(args.train_data_path.encode()).hexdigest()
+        train_eagle3_dataset = build_eagle3_dataset(
             dataset=train_dataset,
             tokenizer=tokenizer,
             chat_template=args.chat_template,
             max_length=args.max_length,
             cache_dir=os.path.join(args.cache_dir, "processed_dataset"),
-            cache_key=cache_key,
+            cache_key=dataset_cache_key,
+        )
+        vocab_cache_key = cache_key_from_config(
+            args.draft_model_config, dataset_cache_key,
         )
         vocab_mapping_path = generate_vocab_mapping_file(
-            dataset=train_eagle3_dataset_tmp,
+            dataset=train_eagle3_dataset,
             target_vocab_size=draft_model_config.vocab_size,
             draft_vocab_size=draft_model_config.draft_vocab_size,
             cache_dir=os.path.join(args.cache_dir, "vocab_mapping"),
-            cache_key=cache_key,
+            cache_key=vocab_cache_key,
         )
         train_eagle3_dataset = build_offline_eagle3_dataset(
             args.train_hidden_states_path,

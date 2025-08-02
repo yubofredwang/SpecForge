@@ -5,7 +5,6 @@ from abc import ABC, abstractmethod
 
 import torch
 import torch.distributed as dist
-import wandb
 from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -27,12 +26,14 @@ from specforge.data import (
 from specforge.distributed import destroy_distributed, get_dp_group, init_distributed
 from specforge.lr_scheduler import CosineAnnealingWarmupLR
 from specforge.utils import (
+    generate_vocab_cache_key,
     get_last_checkpoint,
     print_with_rank,
     rank_0_priority,
     profiler_schedule,
     trace_handler,
 )
+from specforge.loggers import create_logger
 
 
 def parse_args():
@@ -186,23 +187,26 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.target_model_path)
 
     # convert to dataloader
-    cache_key = hashlib.md5(args.train_data_path.encode()).hexdigest()
     train_dataset = load_dataset("json", data_files=args.train_data_path)["train"]
     with rank_0_priority():
+        dataset_cache_key = hashlib.md5(args.train_data_path.encode()).hexdigest()
         train_eagle3_dataset = build_eagle3_dataset(
             dataset=train_dataset,
             tokenizer=tokenizer,
             chat_template=args.chat_template,
             max_length=args.max_length,
             cache_dir=os.path.join(args.cache_dir, "processed_dataset"),
-            cache_key=cache_key,
+            cache_key=dataset_cache_key,
+        )
+        vocab_cache_key = generate_vocab_cache_key(
+            args.draft_model_config, dataset_cache_key,
         )
         vocab_mapping_path = generate_vocab_mapping_file(
             dataset=train_eagle3_dataset,
             target_vocab_size=draft_model_config.vocab_size,
             draft_vocab_size=draft_model_config.draft_vocab_size,
             cache_dir=os.path.join(args.cache_dir, "vocab_mapping"),
-            cache_key=cache_key,
+            cache_key=vocab_cache_key,
         )
     train_dataloader = prepare_dp_dataloaders(
         train_eagle3_dataset,
@@ -306,9 +310,8 @@ def main():
             print(f"Started PyTorch profiler")
         else:
             profiler = None
-
-        # Since profiling set num_epochs = 1
-        # Set memory usage
+    else:
+        profiler = None
         args.num_epochs = 1
         max_steps = 10        
 

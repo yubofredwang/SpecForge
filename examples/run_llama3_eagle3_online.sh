@@ -17,4 +17,7 @@ torchrun \
     --learning-rate 1e-4 \
     --max-length 2048 \
     --chat-template llama3 \
-    --cache-dir $ROOT_DIR/cache
+    --cache-dir $ROOT_DIR/cache \
+    --mlflow-experiment-name $USER/llama3-8b-eagle3-specforge \
+    --mlflow-run-name $USER/llama3-8b-eagle3-specforge-run-$(date +%Y%m%d-%H%M%S) \
+    --mlflow-tracking-uri https://mlflow.prod.linkedin.com

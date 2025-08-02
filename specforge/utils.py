@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -93,3 +94,9 @@ def trace_handler(output_dir):
         print(f"Memory timeline data saved to {memory_timeline_path}")
         print(f"Stopped PyTorch profiler")
     return handler_fn
+
+
+def generate_vocab_cache_key(config_path: str, dataset_cache_key: str):
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    return hashlib.md5((json.dumps(config) + dataset_cache_key).encode()).hexdigest()
