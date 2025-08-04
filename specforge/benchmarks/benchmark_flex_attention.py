@@ -40,8 +40,6 @@ def run_eagle_llama_attention(seq_len: int, include_backward: bool = False):
     position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to(device)
 
     attention_mask = torch.ones(batch_size, seq_len).to(device)
-    # First 128 is padding
-    attention_mask[:, 128:] = False
     input_embeds = torch.randn(batch_size, seq_len, config.hidden_size).to(device)
     decoder_attention_mask = prepare_decoder_attention_mask(
         attention_mask=attention_mask,
@@ -102,9 +100,6 @@ def run_flex_attention(seq_len: int, include_backward: bool = False):
     # Simulate inputs - move to device
     position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to(device)
     attention_mask = torch.ones(batch_size, seq_len).to(device)
-    # First 128 is padding
-    attention_mask[:, 128:] = False
-    
     for i in range(7):
         # Clear gradients if doing backward pass
         if include_backward:

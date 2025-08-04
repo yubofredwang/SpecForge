@@ -9,6 +9,7 @@ from specforge.modeling.draft.llama3_eagle import (
 )
 from specforge.modeling.draft.llama3_flex_attention import LlamaFlexAttention
 from specforge.utils import padding
+from transformers.cache_utils import DynamicCache
 
 
 
@@ -32,31 +33,31 @@ class TestLlamaAttention(unittest.TestCase):
         self.config = LlamaConfig(**self.config_dict)
 
 
-
     def test_forward_pass_with_cache(self):
         """Test forward pass with caching mechanism."""
         attention = LlamaAttention(self.config)
-        attention.eval()
+        flex_attention = LlamaFlexAttention(self.config)
         
-        batch_size = 1
+        # Ensure same weights
+        with torch.no_grad():
+            flex_attention.q_proj.weight.copy_(attention.q_proj.weight)
+            flex_attention.k_proj.weight.copy_(attention.k_proj.weight)
+            flex_attention.v_proj.weight.copy_(attention.v_proj.weight) 
+            flex_attention.o_proj.weight.copy_(attention.o_proj.weight)
+        
+        attention.eval()
+        flex_attention.eval()
+        batch_size = 2
         seq_len = 128 * 4
         hidden_size = self.config.hidden_size * 2
         
-        # Simulate inputs
-        hidden_states = torch.randn(batch_size, seq_len, hidden_size)
+        ############### Attention Inputs ##############
+
         position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1)
-        
-        # Initialize cache, skip the sdpa
         cache_hidden = [[], []]  # [cache_k, cache_v]
-        num_heads = self.config.num_attention_heads
-        num_key_value_heads = self.config.num_key_value_heads
-        # torch.matmul(query_states, k0.transpose(2, 3)) expects original to be B, H, T, D
-        cache_hidden[0].append(torch.randn(batch_size, num_heads, seq_len, self.config.head_dim))
-        cache_hidden[1].append(torch.randn(batch_size, num_heads, seq_len, self.config.head_dim))
-        
         attention_mask = torch.ones(batch_size, seq_len)
-        # First 128 is padding
-        attention_mask[:, 128:] = False
+        # Simulate one item in the batch is masked and not taking a full block.
+        # attention_mask[0, -340:] = False
         input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size)
         decoder_attention_mask = prepare_decoder_attention_mask(
             attention_mask=attention_mask,
@@ -64,13 +65,16 @@ class TestLlamaAttention(unittest.TestCase):
             inputs_embeds=input_embeds,
             past_key_values_length=0,
         )
-        
-        key_cache = None
-        value_cache = None
 
-        for idx in range(7):
+        ############### Flex Attention Inputs ##############
+        flex_position_ids = position_ids.clone()
+        past_key_values = DynamicCache()
+
+        testing_idx = 2
+        for idx in range(testing_idx):
             is_last = idx == 6
-
+            hidden_states = torch.randn(batch_size, seq_len, hidden_size)
+            flex_hidden_states = hidden_states.clone()
             with torch.no_grad():
                 output = attention(
                     hidden_states=hidden_states,
@@ -80,14 +84,20 @@ class TestLlamaAttention(unittest.TestCase):
                     output_attentions=False,
                     use_cache=True
                 )
-                
+            with torch.no_grad():
+                output_flex = flex_attention(
+                    hidden_states=flex_hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=flex_position_ids,
+                    past_key_values=past_key_values,
+                )
+            torch.testing.assert_close(output, output_flex, atol=1e-2, rtol=1e-2)
             if not is_last:
                 # Step 5.7: we need to update the loss mask
                 ind = torch.arange(seq_len, device=decoder_attention_mask.device)
                 ind0 = ind[idx:]
                 ind1 = ind[: seq_len - idx]
                 decoder_attention_mask[:, :, ind0, ind1] = torch.finfo(decoder_attention_mask.dtype).min
-        
         # Check output shape
         expected_output_shape = (batch_size, seq_len, self.config.hidden_size)
         self.assertEqual(output.shape, expected_output_shape)

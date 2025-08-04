@@ -107,10 +107,10 @@ class LlamaFlexAttention(nn.Module):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
         
-        cos, sin = self.rotary_emb(query_states, seq_len=q_len)
+        lck = past_seen_tokens // q_len
+        cos, sin = self.rotary_emb(query_states, seq_len=q_len + lck)
         cos, sin = cos.to(query_states.device), sin.to(query_states.device)
         # Keep positions ids aligned when padding so the KV cache is unaffected.
-        lck = past_seen_tokens % q_len
         query_states, key_states = apply_rotary_pos_emb(
             query_states, key_states, cos, sin, position_ids + lck
         )
@@ -130,6 +130,7 @@ class LlamaFlexAttention(nn.Module):
 
         seq_lengths = attention_mask.sum(dim=-1)
         # Shrink the attention mask to align with the padding to the right.
+        # This is equivalent to the shirnking logic in eagle3.py
         seq_lengths -= lck
         # Flex Attention
         block_mask = create_block_mask(
@@ -142,11 +143,11 @@ class LlamaFlexAttention(nn.Module):
             KV_LEN=key_cache.shape[-2],
             device=query_states.device,
         )
-
-        compiled_flex_attention = torch.compile(
-            flex_attention, dynamic=True
-        )
-        attn_output = compiled_flex_attention(
+        print(block_mask.to_string())
+        # self.compiled_flex_attention = torch.compile(
+        #     flex_attention, dynamic=True
+        # )
+        attn_output = flex_attention(
             query=query_states,
             key=key_cache,
             value=value_cache,

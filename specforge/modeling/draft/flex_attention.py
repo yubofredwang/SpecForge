@@ -11,22 +11,24 @@ import torch
 
 
 def generate_eagle3_mask(seq_lengths: torch.Tensor, Q_LEN: int, KV_LEN: int):
-    
-    # TODO: Support batch size > 1, we need different suffix length for different batch
 
     def causal_mask(b, h, q_idx, kv_idx):
-        return q_idx >= kv_idx
+        causal_mask = q_idx >= kv_idx
+        padding_mask = kv_idx < seq_lengths[b]
+        return causal_mask & padding_mask
+
+    # def padding_mask_mod(b, h, q_idx, kv_idx):
+    #     # Since right side padding
+    #     return kv_idx < seq_lengths[b]
 
     def suffix_full(b, h, q_idx, kv_idx):
         return kv_idx >= Q_LEN
 
     def suffix_diagonal(b, h, q_idx, kv_idx):
-        # Handles multiple occurance of like kv_idx - 2 * QLEN
+        # Need to handle padding
         return (kv_idx - q_idx) % Q_LEN == 0
     
-    def padding_mask_mod(b, h, q_idx, kv_idx):
-        # Since right side padding
-        return kv_idx < seq_lengths[b]
+
 
     first_half = and_masks(causal_mask, padding_mask_mod)
     second_half = and_masks(suffix_full, suffix_diagonal)
