@@ -107,10 +107,10 @@ class LlamaFlexAttention(nn.Module):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
         
-        cos, sin = self.rotary_emb(query_states, seq_len=q_len)
+        lck = past_seen_tokens // q_len
+        cos, sin = self.rotary_emb(query_states, seq_len=q_len + lck)
         cos, sin = cos.to(query_states.device), sin.to(query_states.device)
         # Keep positions ids aligned when padding so the KV cache is unaffected.
-        lck = past_seen_tokens % q_len
         query_states, key_states = apply_rotary_pos_emb(
             query_states, key_states, cos, sin, position_ids + lck
         )
@@ -127,16 +127,19 @@ class LlamaFlexAttention(nn.Module):
             cache_kwargs=cache_kwargs,
         )
 
-
         seq_lengths = attention_mask.sum(dim=-1)
         # Shrink the attention mask to align with the padding to the right.
+        # This is equivalent to the shirnking logic in eagle3.py
         seq_lengths -= lck
         # Flex Attention
         block_mask = create_block_mask(
             mask_mod=generate_eagle3_mask(
-                seq_lengths=seq_lengths, Q_LEN=q_len, KV_LEN=key_cache.shape[-2]
-            ), 
-            B=bsz, # Rely on broadcast
+                seq_lengths=seq_lengths,
+                Q_LEN=q_len,
+                KV_LEN=key_cache.shape[-2],
+                shift_left=lck,
+            ),
+            B=bsz,
             H=1, # Rely on broadcast
             Q_LEN=q_len, 
             KV_LEN=key_cache.shape[-2],
