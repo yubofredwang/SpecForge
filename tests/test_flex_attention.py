@@ -31,7 +31,6 @@ class TestLlamaAttention(unittest.TestCase):
         }
         self.config = LlamaConfig(**self.config_dict)
 
-
     def test_forward_pass_with_cache(self):
         """Test forward pass with caching mechanism."""
         attention = LlamaAttention(self.config)
@@ -110,6 +109,98 @@ class TestLlamaAttention(unittest.TestCase):
             # Check output is not NaN or Inf
             self.assertFalse(torch.isnan(output_flex).any())
             self.assertFalse(torch.isinf(output_flex).any())
+
+    def test_backward_pass_gradient_comparison(self):
+        """Test backward pass comparing gradients between LlamaAttention and LlamaFlexAttention."""
+        attention = LlamaAttention(self.config)
+        flex_attention = LlamaFlexAttention(self.config)
+        
+        # Ensure same weights
+        with torch.no_grad():
+            flex_attention.q_proj.weight.copy_(attention.q_proj.weight)
+            flex_attention.k_proj.weight.copy_(attention.k_proj.weight)
+            flex_attention.v_proj.weight.copy_(attention.v_proj.weight) 
+            flex_attention.o_proj.weight.copy_(attention.o_proj.weight)
+
+        batch_size = 2
+        seq_len = 128 * 4
+        hidden_size = self.config.hidden_size * 2
+        
+        ############### Attention Inputs ##############
+        position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1)
+        cache_hidden = [[], []]  # [cache_k, cache_v]
+        attention_mask = torch.ones(batch_size, seq_len)
+        # Simulate one item in the batch is masked and not taking a full block.
+        # padding_start_index = seq_len - 50
+        # attention_mask[1, padding_start_index:] = False
+        input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size)
+        decoder_attention_mask = prepare_decoder_attention_mask(
+            attention_mask=attention_mask,
+            input_shape=(batch_size, seq_len),
+            inputs_embeds=input_embeds,
+            past_key_values_length=0,
+        )
+
+        ############### Flex Attention Inputs ##############
+        flex_position_ids = position_ids.clone()
+        past_key_values = DynamicCache()
+        loss_mask = torch.ones(batch_size, seq_len, requires_grad=False)
+
+        # Create input tensors that require gradients
+        ttt_length = 7
+        loss_list = []
+        loss_flex_list = []
+        
+        for idx in range(ttt_length):
+            is_last = idx == 6
+            
+            hidden_states = torch.randn(batch_size, seq_len, hidden_size, requires_grad=True)
+            flex_hidden_states = hidden_states.clone().detach().requires_grad_(True)
+            output = attention(
+                hidden_states=hidden_states,
+                attention_mask=decoder_attention_mask,
+                position_ids=position_ids,
+                cache_hidden=cache_hidden,
+                output_attentions=False,
+                use_cache=True
+            )
+            output_flex = flex_attention(
+                hidden_states=flex_hidden_states,
+                attention_mask=attention_mask,
+                position_ids=flex_position_ids,
+                past_key_values=past_key_values,
+            )
+
+
+            # Apply loss mask on calculation over batch
+            loss = (output * loss_mask[..., None]).sum().mean()
+            loss_flex = (output_flex * loss_mask[..., None]).sum().mean()
+            torch.testing.assert_close(loss, loss_flex, atol=1e-3, rtol=1e-3)
+            loss_list.append(loss)
+            loss_flex_list.append(loss_flex)
+            # Compare gradients
+
+            if not is_last:
+                # Step 5.7: we need to update the loss mask
+                ind = torch.arange(seq_len, device=decoder_attention_mask.device)
+                ind0 = ind[idx:]
+                ind1 = ind[: seq_len - idx]
+                decoder_attention_mask[:, :, ind0, ind1] = torch.finfo(decoder_attention_mask.dtype).min
+                loss_mask = padding(loss_mask, left=False)
+        
+        mean_loss = sum(loss_list) / len(loss_list)
+        mean_loss_flex = sum(loss_flex_list) / len(loss_flex_list)
+        mean_loss.backward()
+        mean_loss_flex.backward()
+        projections = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
+        for proj_name in projections:
+            torch.testing.assert_close(
+                getattr(attention, proj_name).weight.grad, 
+                getattr(flex_attention, proj_name).weight.grad,
+                atol=1e-3, 
+                rtol=1e-3,
+                msg=f"Gradients should be similar between LlamaAttention and LlamaFlexAttention for {proj_name}"
+            )
 
 
 if __name__ == "__main__":

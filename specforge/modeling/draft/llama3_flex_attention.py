@@ -17,7 +17,7 @@ from specforge.modeling.draft.flex_attention import generate_eagle3_mask
 
 
 class LlamaFlexAttention(nn.Module):
-    """Multi-headed attention from 'Attention Is All You Need' paper"""
+    """LLama3 Implementation with Flex Attention as the attention backend."""
 
     def __init__(self, config, layer_idx: int = 0):
         super().__init__()
@@ -146,10 +146,10 @@ class LlamaFlexAttention(nn.Module):
             device=query_states.device,
         )
 
-        compiled_flex_attention = torch.compile(
-            flex_attention, dynamic=True
-        )
-        attn_output = compiled_flex_attention(
+        # compiled_flex_attention = torch.compile(
+        #     flex_attention, dynamic=True
+        # )
+        attn_output = flex_attention(
             query=query_states,
             key=key_cache,
             value=value_cache,
