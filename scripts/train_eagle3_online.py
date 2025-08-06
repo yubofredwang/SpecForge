@@ -4,7 +4,6 @@ import os
 
 import torch
 import torch.distributed as dist
-import wandb
 from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -25,11 +24,11 @@ from specforge.data import (
 )
 from specforge.distributed import destroy_distributed, get_dp_group, init_distributed
 from specforge.lr_scheduler import CosineAnnealingWarmupLR
+from specforge.logging import create_logger, validate_logger_args
 from specforge.utils import (
     get_last_checkpoint,
     print_with_rank,
     rank_0_priority,
-    validate_wandb_args,
 )
 
 
@@ -85,25 +84,33 @@ def parse_args():
     # resume
     parser.add_argument("--resume", action="store_true")
 
-    # wandb wandb args
-    parser.add_argument("--wandb", action="store_true")
+    # logging args
+    parser.add_argument(
+        "--logger-backend",
+        type=str,
+        choices=["wandb", "mlflow", "none"],
+        default="none",
+        help="Logging backend to use"
+    )
+    
+    # wandb args (kept for backward compatibility)
+    parser.add_argument("--wandb", action="store_true", help="Enable wandb logging (deprecated, use --logger-backend wandb)")
     parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-name", type=str, default=None)
     parser.add_argument("--wandb-key", type=str, default=None)
+    
+    # mlflow args
+    parser.add_argument("--mlflow-tracking-uri", type=str, default=None)
+    parser.add_argument("--mlflow-experiment", type=str, default=None)
+    parser.add_argument("--mlflow-run-name", type=str, default=None)
 
     args = parser.parse_args()
+    
+    # Handle backward compatibility: if --wandb is set, use wandb backend
+    if args.wandb and args.logger_backend == "none":
+        args.logger_backend = "wandb"
 
     return parser, args
-
-
-def init_wandb(args):
-    wandb.login(key=args.wandb_key)
-    wandb.init(project=args.wandb_project, name=args.wandb_name)
-
-
-def wandb_log_if_initialized(log_dict):
-    if dist.get_rank() == 0 and wandb.run is not None:
-        wandb.log(log_dict)
 
 
 def print_on_rank0(message):
@@ -118,11 +125,29 @@ def main():
     init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
     print_with_rank(f"Initialized distributed environment")
 
-    # Validate wandb arguments
-    validate_wandb_args(parser, args)
+    # Validate logger arguments
+    validate_logger_args(parser, args)
 
-    if args.wandb and dist.get_rank() == 0:
-        init_wandb(args)
+    # Initialize logger
+    logger_kwargs = {}
+    if args.logger_backend == "wandb":
+        logger_kwargs = {
+            "api_key": args.wandb_key,
+            "enabled": True
+        }
+    elif args.logger_backend == "mlflow":
+        logger_kwargs = {
+            "tracking_uri": args.mlflow_tracking_uri,
+            "enabled": True
+        }
+    
+    logger = create_logger(args.logger_backend, **logger_kwargs)
+    
+    # Initialize logging if enabled
+    if args.logger_backend != "none":
+        project = args.wandb_project if args.logger_backend == "wandb" else args.mlflow_experiment
+        name = args.wandb_name if args.logger_backend == "wandb" else args.mlflow_run_name
+        logger.initialize(project=project, name=name)
 
     # detecting last ckpt for draft model
     draft_model_last_checkpoint = None
@@ -305,7 +330,7 @@ def main():
                 logdict[f"train/ploss_{i}"] = plosses[i].item()
             for i in range(len(acces)):
                 logdict[f"train/acc_{i}"] = acces[i]
-            wandb_log_if_initialized(logdict)
+            logger.log_if_enabled(logdict)
 
             epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
             epoch_plosses = [
@@ -317,7 +342,7 @@ def main():
             dist.all_reduce(acc_i)
             acc_i = acc_i / dist.get_world_size()
             acc_i = acc_i.item()
-            wandb_log_if_initialized({f"train/epochacc_{i}": acc_i})
+            logger.log_if_enabled({f"train/epochacc_{i}": acc_i})
             print_on_rank0(
                 f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
             )
@@ -327,7 +352,7 @@ def main():
             dist.all_reduce(loss_i)
             loss_i = loss_i / dist.get_world_size()
             loss_i = loss_i.item()
-            wandb_log_if_initialized({f"train/epochploss_{i}": loss_i})
+            logger.log_if_enabled({f"train/epochploss_{i}": loss_i})
             print_on_rank0(
                 f"Train Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
             )
@@ -356,7 +381,7 @@ def main():
                 acc_i = acc_i / dist.get_world_size()
                 acc_i = acc_i.item()
 
-                wandb_log_if_initialized({f"eval/epochacc_{i}": acc_i})
+                logger.log_if_enabled({f"eval/epochacc_{i}": acc_i})
                 print_on_rank0(
                     f"Eval Epoch [{epoch + 1}/{args.num_epochs}], position {i},  Acc: {acc_i:.2f}"
                 )
@@ -367,7 +392,7 @@ def main():
                 loss_i = loss_i / dist.get_world_size()
                 loss_i = loss_i.item()
 
-                wandb_log_if_initialized({f"eval/epochploss_{i}": loss_i})
+                logger.log_if_enabled({f"eval/epochploss_{i}": loss_i})
                 print_on_rank0(
                     f"Eval Epoch [{epoch + 1}/{args.num_epochs}], position {i}, pLoss: {loss_i:.2f}"
                 )
@@ -409,6 +434,8 @@ def main():
                     print_on_rank0(f"Saved model configuration to {epoch_output_dir}")
                 dist.barrier()
 
+    # Finish logging
+    logger.finish()
     destroy_distributed()
 
 

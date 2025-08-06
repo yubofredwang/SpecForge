@@ -2,7 +2,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT_DIR=$(dirname $SCRIPT_DIR)
 
 # train eagle3 for llama3.1-8b
-NUM_GPUS=${1:-1}
+NUM_GPUS=${1:-8}
 
 torchrun \
     --standalone \
@@ -18,8 +18,8 @@ torchrun \
     --max-length 2048 \
     --chat-template llama3 \
     --cache-dir $ROOT_DIR/cache \
-    --attention-backend flex_attention
-    # --mlflow \
-    # --mlflow-experiment-name $USER/llama3-8b-eagle3-specforge \
-    # --mlflow-run-name $USER/llama3-8b-eagle3-specforge-run-$(date +%Y%m%d-%H%M%S) \
-    # --mlflow-tracking-uri https://mlflow.prod.linkedin.com
+    --logger-backend mlflow \
+    --mlflow-experiment $USER/llama3-8b-eagle3-specforge \
+    --mlflow-run-name $USER/llama3-8b-eagle3-specforge-run-$(date +%Y%m%d-%H%M%S) \
+    --mlflow-tracking-uri https://mlflow.prod.linkedin.com
+    # --attention-backend flex_attention \
