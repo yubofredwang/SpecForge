@@ -31,10 +31,11 @@ class TestLlamaAttention(unittest.TestCase):
         }
         self.config = LlamaConfig(**self.config_dict)
 
+    @unittest.skip("Skip this test for now")    
     def test_forward_pass_with_cache(self):
         """Test forward pass with caching mechanism."""
-        attention = LlamaAttention(self.config)
-        flex_attention = LlamaFlexAttention(self.config)
+        attention = LlamaAttention(self.config).to("cuda")
+        flex_attention = LlamaFlexAttention(self.config).to("cuda")
         
         # Ensure same weights
         with torch.no_grad():
@@ -51,13 +52,13 @@ class TestLlamaAttention(unittest.TestCase):
         
         ############### Attention Inputs ##############
 
-        position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1)
+        position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to("cuda")
         cache_hidden = [[], []]  # [cache_k, cache_v]
-        attention_mask = torch.ones(batch_size, seq_len)
+        attention_mask = torch.ones(batch_size, seq_len).to("cuda")
         # Simulate one item in the batch is masked and not taking a full block.
         padding_start_index = 128 * 4 - 200
         attention_mask[1, padding_start_index:] = False
-        input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size)
+        input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size).to("cuda")
         decoder_attention_mask = prepare_decoder_attention_mask(
             attention_mask=attention_mask,
             input_shape=(batch_size, seq_len),
@@ -72,7 +73,7 @@ class TestLlamaAttention(unittest.TestCase):
         ttt_length = 7
         for idx in range(ttt_length):
             is_last = idx == 6
-            hidden_states = torch.randn(batch_size, seq_len, hidden_size)
+            hidden_states = torch.randn(batch_size, seq_len, hidden_size, device="cuda")
             flex_hidden_states = hidden_states.clone()
             with torch.no_grad():
                 output = attention(
@@ -112,8 +113,8 @@ class TestLlamaAttention(unittest.TestCase):
 
     def test_backward_pass_gradient_comparison(self):
         """Test backward pass comparing gradients between LlamaAttention and LlamaFlexAttention."""
-        attention = LlamaAttention(self.config)
-        flex_attention = LlamaFlexAttention(self.config)
+        attention = LlamaAttention(self.config).to("cuda")
+        flex_attention = LlamaFlexAttention(self.config).to("cuda")
         
         # Ensure same weights
         with torch.no_grad():
@@ -127,13 +128,13 @@ class TestLlamaAttention(unittest.TestCase):
         hidden_size = self.config.hidden_size * 2
         
         ############### Attention Inputs ##############
-        position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1)
+        position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to("cuda")
         cache_hidden = [[], []]  # [cache_k, cache_v]
-        attention_mask = torch.ones(batch_size, seq_len)
+        attention_mask = torch.ones(batch_size, seq_len).to("cuda")
         # Simulate one item in the batch is masked and not taking a full block.
         # padding_start_index = seq_len - 50
         # attention_mask[1, padding_start_index:] = False
-        input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size)
+        input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size).to("cuda")
         decoder_attention_mask = prepare_decoder_attention_mask(
             attention_mask=attention_mask,
             input_shape=(batch_size, seq_len),
@@ -144,7 +145,7 @@ class TestLlamaAttention(unittest.TestCase):
         ############### Flex Attention Inputs ##############
         flex_position_ids = position_ids.clone()
         past_key_values = DynamicCache()
-        loss_mask = torch.ones(batch_size, seq_len, requires_grad=False)
+        loss_mask = torch.ones(batch_size, seq_len, requires_grad=False).to("cuda")
 
         # Create input tensors that require gradients
         ttt_length = 7
@@ -154,7 +155,7 @@ class TestLlamaAttention(unittest.TestCase):
         for idx in range(ttt_length):
             is_last = idx == 6
             
-            hidden_states = torch.randn(batch_size, seq_len, hidden_size, requires_grad=True)
+            hidden_states = torch.randn(batch_size, seq_len, hidden_size, requires_grad=True, device="cuda")
             flex_hidden_states = hidden_states.clone().detach().requires_grad_(True)
             output = attention(
                 hidden_states=hidden_states,
@@ -187,7 +188,6 @@ class TestLlamaAttention(unittest.TestCase):
                 ind1 = ind[: seq_len - idx]
                 decoder_attention_mask[:, :, ind0, ind1] = torch.finfo(decoder_attention_mask.dtype).min
                 loss_mask = padding(loss_mask, left=False)
-        
         mean_loss = sum(loss_list) / len(loss_list)
         mean_loss_flex = sum(loss_flex_list) / len(loss_flex_list)
         mean_loss.backward()

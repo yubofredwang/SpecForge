@@ -23,7 +23,6 @@ config_dict = {
 config = LlamaConfig(**config_dict)
 
 
-
 def run_eagle_llama_attention(seq_len: int, include_backward: bool = False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     

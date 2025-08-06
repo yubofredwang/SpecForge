@@ -27,10 +27,7 @@ def generate_eagle3_mask(seq_lengths: torch.Tensor, Q_LEN: int, KV_LEN: int, shi
     mask_mod.__name__ = f"eagle3_mask_Q_{Q_LEN}_KV_{KV_LEN}"
     return mask_mod
 
-
-if __name__ == "__main__":
-    # flex_attention = torch.compile(_flex_attention, dynamic=False)
-    # flex_attention_call = lambda: flex_attention(query, key, value, block_mask=block_mask)
+def test_flex_attention():
     B = 1
     H = 1
     S = 128 * 8
@@ -57,3 +54,6 @@ if __name__ == "__main__":
     print(dense_mask)
     output = flex_attention(query, key_cache, value_cache, block_mask=block_mask)
 
+
+if __name__ == "__main__":
+    test_flex_attention()

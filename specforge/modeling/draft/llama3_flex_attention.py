@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import math
-from typing import Optional, List, Tuple
+from packaging import version
+from typing import Optional, List, Tuple, ClassVar
 from transformers import LlamaConfig
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 from specforge.modeling.draft.llama3_eagle import (
@@ -10,15 +11,64 @@ from specforge.modeling.draft.llama3_eagle import (
     LlamaDynamicNTKScalingRotaryEmbedding,
     apply_rotary_pos_emb
 )
+from transformers.utils import is_torchdynamo_compiling
 from transformers.cache_utils import Cache, DynamicCache
 from specforge.modeling.draft.flex_attention import generate_eagle3_mask
 
 
+# Reference Implementation https://github.com/huggingface/transformers/blob/main/src/transformers/integrations/flex_attention.py
+class WrappedFlexAttention:
+    """
+    We are doing a singleton class so that flex attention is compiled once when it's first called.
+    """
+
+    _instance = None
+    _is_flex_compiled = False
+    _compiled_flex_attention = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            # Create a new instance if one doesn't already exist
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @torch.compiler.disable(recursive=False)
+    def __init__(self):
+        """
+        Initialize or update the singleton instance.
+        """
+        if not self._is_flex_compiled:
+            # Enable dynamic shapes to handle different input sizes
+            self._compiled_flex_attention = torch.compile(
+                flex_attention, 
+                dynamic=True,
+            )
+            self._is_flex_compiled = True
+
+    def __call__(self):
+        return self._compiled_flex_attention
+
+
+def compile_friendly_flex_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    **kwargs,
+) -> torch.Tensor:
+    # First call initialise singleton wrapper object, second call invokes the object method to return compiled flex attention
+    # Do not use compiled version if already compiling forward (it raises issues)
+    flex_attention_compiled = WrappedFlexAttention()() if not is_torchdynamo_compiling() else flex_attention
+    return flex_attention_compiled(
+        query,
+        key,
+        value,
+        **kwargs,
+    )
 
 
 class LlamaFlexAttention(nn.Module):
-    """LLama3 Implementation with Flex Attention as the attention backend."""
-
+    _compiled_instances: ClassVar[dict] = {}
+    
     def __init__(self, config, layer_idx: int = 0):
         super().__init__()
         self.config = config
@@ -144,15 +194,13 @@ class LlamaFlexAttention(nn.Module):
             Q_LEN=q_len, 
             KV_LEN=key_cache.shape[-2],
             device=query_states.device,
+            _compile=True,
         )
 
-        # compiled_flex_attention = torch.compile(
-        #     flex_attention, dynamic=True
-        # )
-        attn_output = flex_attention(
+        attn_output = compile_friendly_flex_attention(
             query=query_states,
             key=key_cache,
-            value=value_cache,
+            value=value_cache, 
             block_mask=block_mask,
             enable_gqa=True,
         )
