@@ -22,5 +22,5 @@ torchrun \
     --mlflow-experiment $USER/llama3-8b-eagle3-specforge \
     --mlflow-run-name $USER/llama3-8b-eagle3-specforge-run-$(date +%Y%m%d-%H%M%S) \
     --mlflow-tracking-uri https://mlflow.prod.linkedin.com \
-    --eval-data-split 0.01 \
+    --eval-data-split 0.01
     # --attention-backend flex_attention \

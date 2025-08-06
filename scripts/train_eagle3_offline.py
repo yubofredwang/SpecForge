@@ -231,6 +231,7 @@ def main():
 
         for data in tqdm(train_dataloader, desc=f"Training Epoch {epoch}"):
             optimizer.zero_grad()
+            # TODO(yubwang): Enable flex attention for offline training.
             plosses, _, acces = eagle3_model(
                 input_ids=data["input_ids"].cuda(),  # [B, S]
                 attention_mask=data["attention_mask"].cuda(),  # [B, S]
