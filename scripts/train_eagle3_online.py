@@ -80,6 +80,7 @@ def parse_args():
         default=20,
         help="Timeout for collective communication in minutes",
     )
+    parser.add_argument("--attention-backend", type=str, default="sdpa")
 
     # resume
     parser.add_argument("--resume", action="store_true")
@@ -152,13 +153,13 @@ def main():
     draft_model_config = AutoDraftModelConfig.from_file(args.draft_model_config)
     if draft_model_last_checkpoint:
         draft_model = (
-            AutoEagle3DraftModel.from_pretrained(draft_model_last_checkpoint)
+            AutoEagle3DraftModel.from_pretrained(draft_model_last_checkpoint, attention_backend=args.attention_backend)
             .cuda()
             .to(torch.bfloat16)
         )
     else:
         draft_model = (
-            AutoEagle3DraftModel.from_config(draft_model_config)
+            AutoEagle3DraftModel.from_config(draft_model_config, attention_backend=args.attention_backend)
             .cuda()
             .to(torch.bfloat16)
         )
@@ -224,6 +225,7 @@ def main():
         target_model=target_model,
         draft_model=draft_model,
         length=args.ttt_length,
+        attention_backend=args.attention_backend,
     )
     # eagle3_model = DDP(eagle3_model, find_unused_parameters=True)
     eagle3_model = FSDP(

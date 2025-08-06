@@ -8,6 +8,10 @@ import torch.nn.functional as F
 from transformers import GenerationMixin, LlamaConfig, PreTrainedModel
 from transformers.activations import ACT2FN
 from transformers.models.llama.configuration_llama import LlamaConfig
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+from transformers.cache_utils import Cache, DynamicCache
+from specforge.modeling.draft.eagle3_flex_mask import generate_eagle3_mask
+from transformers.utils import is_torchdynamo_compiling
 
 from ..utils import padding
 from .base import Eagle3DraftModel
@@ -312,7 +316,7 @@ class LlamaAttention(nn.Module):
         cache_hidden: Optional[List[torch.Tensor]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        past_key_values: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -477,16 +481,219 @@ class LlamaRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
+# Reference Implementation https://github.com/huggingface/transformers/blob/main/src/transformers/integrations/flex_attention.py
+class WrappedFlexAttention:
+    """
+    We are doing a singleton class so that flex attention is compiled once when it's first called.
+    """
+
+    _instance = None
+    _is_flex_compiled = False
+    _compiled_flex_attention = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            # Create a new instance if one doesn't already exist
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @torch.compiler.disable(recursive=False)
+    def __init__(self):
+        """
+        Initialize or update the singleton instance.
+        """
+        if not self._is_flex_compiled:
+            # Enable dynamic shapes to handle different input sizes
+            self._compiled_flex_attention = torch.compile(
+                flex_attention, 
+                dynamic=True,
+            )
+            self._is_flex_compiled = True
+
+    def __call__(self):
+        return self._compiled_flex_attention
+
+
+def compile_friendly_flex_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    **kwargs,
+) -> torch.Tensor:
+    # First call initialise singleton wrapper object, second call invokes the object method to return compiled flex attention
+    # Do not use compiled version if already compiling forward (it raises issues)
+    flex_attention_compiled = WrappedFlexAttention()() if not is_torchdynamo_compiling() else flex_attention
+    return flex_attention_compiled(
+        query,
+        key,
+        value,
+        **kwargs,
+    )
+
+class LlamaFlexAttention(nn.Module):
+    
+    def __init__(self, config, layer_idx: int = 0):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        if hasattr(config, "head_dim"):
+            self.head_dim = config.head_dim
+        else:
+            self.head_dim = self.hidden_size // self.num_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.max_position_embeddings = config.max_position_embeddings
+
+        self.q_proj = nn.Linear(
+            self.hidden_size * 2, self.num_heads * self.head_dim, bias=False
+        )
+        self.k_proj = nn.Linear(
+            self.hidden_size * 2, self.num_key_value_heads * self.head_dim, bias=False
+        )
+        self.v_proj = nn.Linear(
+            self.hidden_size * 2, self.num_key_value_heads * self.head_dim, bias=False
+        )
+        self.o_proj = nn.Linear(
+            self.num_heads * self.head_dim, self.hidden_size, bias=False
+        )
+        self._init_rope()
+
+    def _init_rope(self):
+        if self.config.rope_scaling is None:
+            self.rotary_emb = LlamaRotaryEmbedding(
+                self.head_dim, max_position_embeddings=self.max_position_embeddings
+            )
+        else:
+            scaling_type = self.config.rope_scaling["rope_type"]
+            scaling_factor = self.config.rope_scaling["factor"]
+            if scaling_type == "linear":
+                self.rotary_emb = LlamaLinearScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                )
+            elif scaling_type == "dynamic":
+                self.rotary_emb = LlamaDynamicNTKScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                )
+            elif scaling_type == "llama3":
+                # for nv type
+                self.rotary_emb = LlamaRotaryEmbedding(
+                    self.head_dim, max_position_embeddings=self.max_position_embeddings
+                )
+            else:
+                raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
+
+    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
+        return (
+            tensor.view(bsz, seq_len, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+            .contiguous()
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cache_hidden: Optional[List[torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        bsz, q_len, _ = hidden_states.size()
+
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        query_states = query_states.view(
+            bsz, q_len, self.num_heads, self.head_dim
+        ).transpose(1, 2)
+        key_states = key_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1, 2)
+        value_states = value_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1, 2)
+        
+        lck = past_seen_tokens // q_len
+        cos, sin = self.rotary_emb(query_states, seq_len=q_len + lck)
+        cos, sin = cos.to(query_states.device), sin.to(query_states.device)
+        # Keep positions ids aligned when padding so the KV cache is unaffected.
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin, position_ids + lck
+        )
+
+        cache_position: torch.Tensor = torch.arange(
+            past_seen_tokens, past_seen_tokens + q_len, device=hidden_states.device
+        )
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        
+        key_cache, value_cache = past_key_values.update(
+            key_states,
+            value_states,
+            layer_idx=self.layer_idx,
+            cache_kwargs=cache_kwargs,
+        )
+
+        seq_lengths = attention_mask.sum(dim=-1)
+        # Shrink the attention mask to align with the padding to the right.
+        # This is equivalent to the shirnking logic in eagle3.py
+        seq_lengths -= lck
+        # Flex Attention
+        block_mask = create_block_mask(
+            mask_mod=generate_eagle3_mask(
+                seq_lengths=seq_lengths,
+                Q_LEN=q_len,
+                KV_LEN=key_cache.shape[-2],
+                shift_left=lck,
+            ),
+            B=bsz,
+            H=1, # Rely on broadcast
+            Q_LEN=q_len, 
+            KV_LEN=key_cache.shape[-2],
+            device=query_states.device,
+            _compile=True,
+        )
+        print(block_mask.to_string())
+        print(f"query_states.shape: {query_states.shape}")
+        print(f"key_cache.shape: {key_cache.shape}")
+        print(f"value_cache.shape: {value_cache.shape}")
+        attn_output = compile_friendly_flex_attention(
+            query=query_states,
+            key=key_cache,
+            value=value_cache, 
+            block_mask=block_mask,
+            enable_gqa=True,
+        )
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(bsz, q_len, self.head_dim * self.num_heads)
+        attn_output = self.o_proj(attn_output)
+        return attn_output
+
+
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config, last=True):
+    def __init__(self, config, last=True, attention_backend="sdpa"):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = LlamaAttention(config=config)
+        if attention_backend == "sdpa":
+            self.self_attn = LlamaAttention(config=config)
+        elif attention_backend == "flex_attention":
+            logger.warning("Using flex attention on draft model training!")
+            self.self_attn = LlamaFlexAttention(config=config)
+        else:
+            raise ValueError(f"Unknown attention backend {attention_backend}")
+
         self.mlp = LlamaMLP(config, last=last)
-        # self.fc = nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.hidden_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        # if self.index!=0:
 
         self.post_attention_layernorm = LlamaRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -499,7 +706,7 @@ class LlamaDecoderLayer(nn.Module):
         cache_hidden: List[List[torch.Tensor]] = [],
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        past_key_values: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
     ) -> Tuple[
@@ -531,7 +738,7 @@ class LlamaDecoderLayer(nn.Module):
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=past_key_value,
+            past_key_values=past_key_values,
             output_attentions=output_attentions,
             use_cache=use_cache,
         )
@@ -551,7 +758,7 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
 
     config_class = LlamaConfig
 
-    def __init__(self, config, quant_config=None) -> None:
+    def __init__(self, config, quant_config=None, attention_backend="sdpa") -> None:
         super().__init__(config)
         self.config = config
         self.quant_config = quant_config
@@ -561,7 +768,7 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         self.embed_tokens = nn.Embedding(
             config.vocab_size, config.hidden_size, config.pad_token_id
         )
-        self.midlayer = LlamaDecoderLayer(config)
+        self.midlayer = LlamaDecoderLayer(config, attention_backend=attention_backend)
 
         if hasattr(config, "target_hidden_size"):
             self.fc = torch.nn.Linear(
@@ -629,7 +836,7 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
             cache_hidden=cache_hidden,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=None,
+            past_key_values=None,
             output_attentions=False,
             use_cache=False,
         )
@@ -655,10 +862,12 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
         self,
         input_embeds: torch.Tensor,
         hidden_states: torch.Tensor,
-        cache_hidden: torch.Tensor,
-        attention_mask: torch.Tensor,
-        position_ids: torch.Tensor,
-        use_cache: bool = True,
+        cache_hidden: Optional[List[torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
     ) -> torch.Tensor:
         return self.midlayer(
             input_emb=input_embeds,
@@ -666,7 +875,7 @@ class LlamaForCausalLMEagle3(Eagle3DraftModel):
             cache_hidden=cache_hidden,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=None,
-            output_attentions=False,
-            use_cache=False,
+            past_key_values=past_key_values,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
         )

@@ -27,7 +27,7 @@ def generate_eagle3_mask(seq_lengths: torch.Tensor, Q_LEN: int, KV_LEN: int, shi
     mask_mod.__name__ = f"eagle3_mask_Q_{Q_LEN}_KV_{KV_LEN}"
     return mask_mod
 
-def test_flex_attention():
+def test_eagle3_flex_mask():
     B = 1
     H = 1
     S = 128 * 8
@@ -56,4 +56,4 @@ def test_flex_attention():
 
 
 if __name__ == "__main__":
-    test_flex_attention()
+    test_eagle3_flex_mask()
