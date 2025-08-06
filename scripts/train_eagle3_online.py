@@ -49,6 +49,7 @@ def parse_args():
     # add training-related arguments
     parser.add_argument("--train-data-path", type=str, required=True)
     parser.add_argument("--eval-data-path", type=str, default=None)
+    parser.add_argument("--eval-data-split", type=str, default=None)
     parser.add_argument("--num-epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
@@ -172,6 +173,7 @@ def main():
     # convert to dataloader
     cache_key = hashlib.md5(args.train_data_path.encode()).hexdigest()
     train_dataset = load_dataset("json", data_files=args.train_data_path)["train"]
+    eval_eagle3_dataset = None
     with rank_0_priority():
         train_eagle3_dataset = build_eagle3_dataset(
             dataset=train_dataset,
@@ -188,6 +190,10 @@ def main():
             cache_dir=os.path.join(args.cache_dir, "vocab_mapping"),
             cache_key=cache_key,
         )
+    if args.eval_data_split is not None:
+        assert args.eval_data_path is None, "eval_data_path must be None when eval_data_split is provided!"
+        train_eagle3_dataset, eval_eagle3_dataset = train_eagle3_dataset.train_test_split(test_size=0.01, seed=0)
+
     train_dataloader = prepare_dp_dataloaders(
         train_eagle3_dataset,
         args.batch_size,
@@ -212,6 +218,7 @@ def main():
             cache_dir=os.path.join(args.cache_dir, "processed_dataset"),
             cache_key=cache_key,
         )
+    if eval_eagle3_dataset is not None:
         eval_dataloader = prepare_dp_dataloaders(
             eval_eagle3_dataset,
             args.batch_size,
