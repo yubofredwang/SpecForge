@@ -1,19 +1,20 @@
+import sys
 import unittest
 import torch
 import torch.nn as nn
 from transformers import LlamaConfig
 
 from specforge.modeling.draft.llama3_eagle import (
-    LlamaAttention, 
+    LlamaAttention,
+    LlamaFlexAttention,
     prepare_decoder_attention_mask,
 )
-from specforge.modeling.draft.llama3_flex_attention import LlamaFlexAttention
 from specforge.utils import padding
 from transformers.cache_utils import DynamicCache
 
 
 
-class TestLlamaAttention(unittest.TestCase):
+class TestFlexAttention(unittest.TestCase):
     """Comprehensive test suite for LlamaAttention with simulated inputs."""
 
     def setUp(self):
@@ -31,7 +32,7 @@ class TestLlamaAttention(unittest.TestCase):
         }
         self.config = LlamaConfig(**self.config_dict)
 
-    @unittest.skip("Skip this test for now")    
+  
     def test_forward_pass_with_cache(self):
         """Test forward pass with caching mechanism."""
         attention = LlamaAttention(self.config).to("cuda")
@@ -202,6 +203,46 @@ class TestLlamaAttention(unittest.TestCase):
                 msg=f"Gradients should be similar between LlamaAttention and LlamaFlexAttention for {proj_name}"
             )
 
+    def test_flex_attention_with_seq_len_less_than_block_size(self):
+        """Test flex attention with sequence length less than block size."""
+        flex_attention = LlamaFlexAttention(self.config).to("cuda")
+        batch_size = 1
+        seq_len = 100
+        hidden_size = 128
+
+        position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to("cuda")
+        attention_mask = torch.ones(batch_size, seq_len).to("cuda")
+        input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size).to("cuda")
+        
+        # Create past_key_values cache
+        past_key_values = DynamicCache()
+        
+
+        
+        # Run flex attention forward pass
+        for i in range(7):
+            hidden_states = torch.randn(batch_size, seq_len, hidden_size, device="cuda")
+            output = flex_attention(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+            )
+        
+        # Check output shape
+        expected_output_shape = (batch_size, seq_len, self.config.hidden_size)
+        self.assertEqual(output.shape, expected_output_shape)
+        
+        # Check output is not NaN or Inf
+        self.assertFalse(torch.isnan(output).any())
+        self.assertFalse(torch.isinf(output).any())
+        
+        # Check that cache was populated
+        self.assertIsNotNone(past_key_values.key_cache)
+        self.assertIsNotNone(past_key_values.value_cache)
+        self.assertEqual(len(past_key_values.key_cache), 1)  # One layer
+        self.assertEqual(len(past_key_values.value_cache), 1)  # One layer
+
 
 if __name__ == "__main__":
-     unittest.main(verbosity=2)
+        unittest.main(verbosity=2)

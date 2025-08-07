@@ -660,12 +660,10 @@ class LlamaFlexAttention(nn.Module):
             Q_LEN=q_len, 
             KV_LEN=key_cache.shape[-2],
             device=query_states.device,
-            _compile=True,
+            # TODO: enable compiling after fix TorchInductor's Triton code generation issue.
+            # See: https://github.com/pytorch/pytorch/issues/160018
+            # _compile=True,
         )
-        print(block_mask.to_string())
-        print(f"query_states.shape: {query_states.shape}")
-        print(f"key_cache.shape: {key_cache.shape}")
-        print(f"value_cache.shape: {value_cache.shape}")
         attn_output = compile_friendly_flex_attention(
             query=query_states,
             key=key_cache,

@@ -194,6 +194,7 @@ def main():
         args.batch_size,
         num_workers=4,
         shuffle=True,
+        pad_to_multiple_of=128 if args.attention_backend == "flex_attention" else None,
         process_group=get_dp_group(),
     )
     print_with_rank(f"Initialized train dataloader")
@@ -215,6 +216,7 @@ def main():
             args.batch_size,
             num_workers=4,
             shuffle=False,
+            pad_to_multiple_of=128 if args.attention_backend == "flex_attention" else None,
             process_group=get_dp_group(),
         )
         print_with_rank(f"Initialized eval dataloader")
