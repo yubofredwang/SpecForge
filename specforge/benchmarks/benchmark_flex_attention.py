@@ -3,11 +3,12 @@ import time
 import gc
 from transformers import LlamaConfig
 from specforge.modeling.draft.llama3_eagle import (
-    LlamaAttention, 
+    LlamaAttention,
+    LlamaFlexAttention,
     prepare_decoder_attention_mask,
 )
-from specforge.modeling.draft.llama3_flex_attention import LlamaFlexAttention
 from transformers.cache_utils import Cache, DynamicCache
+from specforge.utils import padding
 
 
 config_dict = {
@@ -23,25 +24,28 @@ config_dict = {
 config = LlamaConfig(**config_dict)
 
 
-def run_eagle_llama_attention(seq_len: int, include_backward: bool = False):
+def run_attention(seq_len: int, attention_backend: str = "sdpa"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    attention = LlamaAttention(config).to(device)
-    if include_backward:
-        attention.train()  # Enable training mode for gradients
+    # Initialize cache and attention function based on backend
+    if attention_backend == "sdpa":
+        cache_hidden = [[], []]
+        past_key_values = None
+        attn_func = LlamaAttention(config).to(device)
+    elif attention_backend == "flex_attention":
+        cache_hidden = None
+        past_key_values = DynamicCache()
+        attn_func = LlamaFlexAttention(config).to(device)
     else:
-        attention.eval()
+        raise ValueError(f"Unknown attention backend: {attention_backend}")
 
-    batch_size = 1
+    batch_size = 4
     hidden_size = config.hidden_size * 2
 
     # Simulate inputs - move to device
     position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to(device)
-
-    attention_mask = torch.ones(batch_size, seq_len).to(device)
-    # First 128 is padding
-    attention_mask[:, 128:] = False
     input_embeds = torch.randn(batch_size, seq_len, config.hidden_size).to(device)
+    attention_mask = torch.ones(batch_size, seq_len).to(device)
     decoder_attention_mask = prepare_decoder_attention_mask(
         attention_mask=attention_mask,
         input_shape=(batch_size, seq_len),
@@ -49,23 +53,16 @@ def run_eagle_llama_attention(seq_len: int, include_backward: bool = False):
         past_key_values_length=0,
     )
 
-    for idx in range(7):
+    loss_list = []
+    ttt_length = 7
+    
+    for idx in range(ttt_length):
         is_last = idx == 6
+        hidden_states = torch.randn(batch_size, seq_len, hidden_size, requires_grad=True).to(device)
         
-        # Clear gradients if doing backward pass
-        if include_backward:
-            attention.zero_grad()
-        
-        # Recreate cache for each iteration to avoid graph reuse
-        cache_hidden = [[], []]  # [cache_k, cache_v] - fresh for each iteration
-        
-        # Remove torch.no_grad() when including backward
-        context_manager = torch.no_grad() if not include_backward else torch.enable_grad()
-        
-        with context_manager:
-            hidden_states = torch.randn(batch_size, seq_len, hidden_size, 
-                                      requires_grad=include_backward).to(device)
-            output = attention(
+        # Call attention function with appropriate parameters
+        if attention_backend == "sdpa":
+            output = attn_func(
                 hidden_states=hidden_states,
                 attention_mask=decoder_attention_mask,
                 position_ids=position_ids,
@@ -73,113 +70,69 @@ def run_eagle_llama_attention(seq_len: int, include_backward: bool = False):
                 output_attentions=False,
                 use_cache=True
             )
-            
-            # Compute loss and backward pass if requested
-            if include_backward:
-                # Create a simple loss (sum of outputs)
-                loss = output[0].sum()
-                loss.backward()
-                
+        else:  # flex_attention
+            output = attn_func(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                output_attentions=False,
+                use_cache=True
+            )
+        
+        # Compute a simple loss for benchmarking
+        loss = output[0].sum()
+        loss_list.append(loss)
+        
         if not is_last:
             # Step 5.7: we need to update the loss mask
             ind = torch.arange(seq_len, device=decoder_attention_mask.device)
             ind0 = ind[idx:]
             ind1 = ind[: seq_len - idx]
             decoder_attention_mask[:, :, ind0, ind1] = torch.finfo(decoder_attention_mask.dtype).min
-
-def run_flex_attention(seq_len: int, include_backward: bool = False):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    llama_flex_attention = LlamaFlexAttention(config).to(device)
-    if include_backward:
-        llama_flex_attention.train()  # Enable training mode for gradients
-    else:
-        llama_flex_attention.eval()
-        
-    batch_size = 1
-    hidden_size = config.hidden_size * 2
-    # Simulate inputs - move to device
-    position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to(device)
-    attention_mask = torch.ones(batch_size, seq_len).to(device)
-    # First 128 is padding
-    attention_mask[:, 128:] = False
-    
-    for i in range(7):
-        # Clear gradients if doing backward pass
-        if include_backward:
-            llama_flex_attention.zero_grad()
-        
-        # Recreate cache for each iteration to avoid graph reuse
-        past_key_values = DynamicCache()  # Fresh cache for each iteration
-            
-        context_manager = torch.no_grad() if not include_backward else torch.enable_grad()
-        
-        with context_manager:
-            hidden_states = torch.randn(batch_size, seq_len, hidden_size, 
-                                      requires_grad=include_backward).to(device)
-            flex_output = llama_flex_attention(
-                hidden_states=hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-            )
-            
-            # Compute loss and backward pass if requested
-            if include_backward:
-                # Create a simple loss (sum of outputs)
-                loss = flex_output[0].sum()
-                loss.backward()
+    # Compute mean loss and backward pass
+    if loss_list:
+        mean_loss = sum(loss_list) / len(loss_list)
+        mean_loss.backward()
 
 
-def benchmark_function(func, func_name: str, *args, **kwargs):
+def benchmark_function(attention_backend: str, seq_lengths: list):
     """Benchmark a function for speed and GPU memory usage."""
-    print(f"\n=== Benchmarking {func_name} ===")
+    print(f"\n=== Benchmarking {attention_backend} ===")
     
     # Clear GPU cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
     
     # Warm up runs
     print("Warming up...")
     for _ in range(3):
-        func(*args, **kwargs)
+        run_attention(seq_lengths[0], attention_backend)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
     
+    print("Warmup done, clearing cache...")
     # Clear cache again after warmup
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
     
-    # Benchmark runs
-    num_runs = 10
-    times = []
-    
-    print(f"Running {num_runs} benchmark iterations...")
+    # Start timer
+    start_time = time.time()
     
     # Record initial memory
+    initial_memory = 0
     if torch.cuda.is_available():
         initial_memory = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
+
+    for seq_len in seq_lengths:
+        run_attention(seq_len, attention_backend)
+
+    end_time = time.time()
     
-    for i in range(num_runs):
-        start_time = time.time()
-        func(*args, **kwargs)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        end_time = time.time()
-        times.append(end_time - start_time)
-    
-    # Calculate statistics
-    avg_time = sum(times) / len(times)
-    min_time = min(times)
-    max_time = max(times)
-    
-    print(f"Average time: {avg_time:.4f}s")
-    print(f"Min time: {min_time:.4f}s")
-    print(f"Max time: {max_time:.4f}s")
-    
+    peak_memory = 0
+    current_memory = 0
     if torch.cuda.is_available():
         peak_memory = torch.cuda.max_memory_allocated()
         current_memory = torch.cuda.memory_allocated()
@@ -188,11 +141,9 @@ def benchmark_function(func, func_name: str, *args, **kwargs):
         print(f"Memory increase: {(current_memory - initial_memory) / 1024**3:.3f} GB")
     
     return {
-        'avg_time': avg_time,
-        'min_time': min_time,
-        'max_time': max_time,
-        'peak_memory': peak_memory if torch.cuda.is_available() else 0,
-        'memory_increase': (current_memory - initial_memory) if torch.cuda.is_available() else 0
+        'time': end_time - start_time,
+        'peak_memory': peak_memory,
+        'memory_increase': current_memory - initial_memory
     }
 
 
@@ -205,52 +156,40 @@ if __name__ == "__main__":
     else:
         print("CUDA not available - running on CPU")
     
-    # Set sequence length
-    seq_len = 2048
-    print(f"\nBenchmarking with sequence length: {seq_len}")
+    # Define sequence lengths to test
+    seq_lengths = [128 * i for i in range(1, 10, 2)]
+    print(f"Testing sequence lengths: {seq_lengths}")
     
-    # Benchmark both forward-only and forward+backward
-    for include_backward in [True]:
-        mode_str = "Forward + Backward" if include_backward else "Forward Only"
-        print(f"\n{'='*60}")
-        print(f"BENCHMARKING MODE: {mode_str}")
-        print(f"{'='*60}")
+    # Run each benchmark 5 times
+    eagle_results_list = []
+    flex_results_list = []
+    
+    run_num = 1
+    for run_idx in range(run_num):
+        print(f"\n--- Run {run_idx + 1}/{run_num} ---")
+        eagle_results = benchmark_function("sdpa", seq_lengths)
+        flex_results = benchmark_function("flex_attention", seq_lengths)
         
-        # Benchmark flex attention
-        flex_results = benchmark_function(
-            run_flex_attention, 
-            f"FlexAttention ({mode_str})", 
-            seq_len=seq_len, 
-            include_backward=include_backward
-        )
+        eagle_results_list.append(eagle_results)
+        flex_results_list.append(flex_results)
+    
+    # Calculate averages
+    avg_eagle_time = sum(r['time'] for r in eagle_results_list) / len(eagle_results_list)
+    avg_flex_time = sum(r['time'] for r in flex_results_list) / len(flex_results_list)
+    
+    print(f"\n=== Final Results (averaged over {run_num} runs) ===")
+    print(f"Eagle (SDPA) average time: {avg_eagle_time:.3f} seconds")
+    print(f"Flex attention average time: {avg_flex_time:.3f} seconds")
+    print(f"Speed ratio (Eagle/Flex): {avg_eagle_time / avg_flex_time:.2f}x")
+    
+    if torch.cuda.is_available() and eagle_results_list and flex_results_list:
+        # Use the last run's memory results for comparison
+        eagle_peak = eagle_results_list[-1]['peak_memory']
+        flex_peak = flex_results_list[-1]['peak_memory']
         
-        # Force garbage collection between benchmarks
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # Benchmark eagle attention
-        eagle_results = benchmark_function(
-            run_eagle_llama_attention, 
-            f"EagleAttention ({mode_str})", 
-            seq_len=seq_len, 
-            include_backward=include_backward
-        )
-        
-        # Print comparison
-        print("\n" + "="*50)
-        print(f"COMPARISON SUMMARY - {mode_str}")
-        print("="*50)
-        
-        speed_ratio = eagle_results['avg_time'] / flex_results['avg_time']
-        print(f"Speed comparison (Eagle vs Flex):")
-        print(f"  Eagle: {eagle_results['avg_time']:.4f}s")
-        print(f"  Flex:  {flex_results['avg_time']:.4f}s")
-        print(f"  Ratio: {speed_ratio:.2f}x ({'Eagle is faster' if speed_ratio < 1 else 'Flex is faster'})")
-        
-        if torch.cuda.is_available():
-            memory_ratio = eagle_results['peak_memory'] / flex_results['peak_memory']
+        if flex_peak > 0:  # Avoid division by zero
+            memory_ratio = eagle_peak / flex_peak
             print(f"\nMemory comparison (Eagle vs Flex):")
-            print(f"  Eagle peak: {eagle_results['peak_memory'] / 1024**3:.3f} GB")
-            print(f"  Flex peak:  {flex_results['peak_memory'] / 1024**3:.3f} GB")
+            print(f"  Eagle peak: {eagle_peak / 1024**3:.3f} GB")
+            print(f"  Flex peak:  {flex_peak / 1024**3:.3f} GB")
             print(f"  Ratio: {memory_ratio:.2f}x ({'Eagle uses less' if memory_ratio < 1 else 'Flex uses less'})")

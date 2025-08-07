@@ -199,7 +199,16 @@ def main():
     # convert to dataloader
     cache_key = hashlib.md5(args.train_data_path.encode()).hexdigest()
     train_dataset = load_dataset("json", data_files=args.train_data_path)["train"]
-    eval_eagle3_dataset = None
+    eval_dataset, eval_eagle3_dataset = None, None
+    if args.eval_data_split is not None:
+        assert args.eval_data_path is None, "eval_data_path must be None when eval_data_split is provided!"
+        datasets = train_dataset.train_test_split(test_size=float(args.eval_data_split), seed=0)
+        train_dataset, eval_dataset = datasets["train"], datasets["test"]
+
+    if args.eval_data_path is not None:
+        cache_key = hashlib.md5(args.eval_data_path.encode()).hexdigest()
+        eval_dataset = load_dataset("json", data_files=args.eval_data_path)["train"]
+
     with rank_0_priority():
         train_eagle3_dataset = build_eagle3_dataset(
             dataset=train_dataset,
@@ -216,10 +225,6 @@ def main():
             cache_dir=os.path.join(args.cache_dir, "vocab_mapping"),
             cache_key=cache_key,
         )
-    if args.eval_data_split is not None:
-        assert args.eval_data_path is None, "eval_data_path must be None when eval_data_split is provided!"
-        train_eagle3_dataset, eval_eagle3_dataset = train_eagle3_dataset.train_test_split(test_size=0.01, seed=0)
-        print(f"Split train and eval dataset, train size: {len(train_eagle3_dataset)}, eval size: {len(eval_eagle3_dataset)}")
 
     train_dataloader = prepare_dp_dataloaders(
         train_eagle3_dataset,
@@ -235,9 +240,8 @@ def main():
     draft_model.load_vocab_mapping(vocab_mapping_path)
     print_with_rank(f"Loaded vocab mapping")
 
-    if args.eval_data_path is not None:
-        cache_key = hashlib.md5(args.eval_data_path.encode()).hexdigest()
-        eval_dataset = load_dataset("json", data_files=args.eval_data_path)["train"]
+
+    if eval_dataset is not None:
         eval_eagle3_dataset = build_eagle3_dataset(
             dataset=eval_dataset,
             tokenizer=tokenizer,
@@ -246,7 +250,6 @@ def main():
             cache_dir=os.path.join(args.cache_dir, "processed_dataset"),
             cache_key=cache_key,
         )
-    if eval_eagle3_dataset is not None:
         eval_dataloader = prepare_dp_dataloaders(
             eval_eagle3_dataset,
             args.batch_size,
@@ -322,7 +325,6 @@ def main():
         draft_model.train()
         epoch_acces = [[] for _ in range(eagle3_model.module.length)]
         epoch_plosses = [[] for _ in range(eagle3_model.module.length)]
-
         for data in tqdm(train_dataloader, desc=f"Training Epoch {epoch}"):
             optimizer.zero_grad()
             plosses, _, acces = eagle3_model(
@@ -371,7 +373,7 @@ def main():
             )
 
         # run evaluation
-        if args.eval_data_path is not None and epoch % args.eval_interval == 0:
+        if eval_dataset is not None and epoch % args.eval_interval == 0:
             # Run evaluation
             draft_model.eval()
             eval_acces = [[] for _ in range(eagle3_model.length)]

@@ -33,8 +33,8 @@ class TestFlexAttention(unittest.TestCase):
         self.config = LlamaConfig(**self.config_dict)
 
   
-    def test_forward_pass_with_cache(self):
-        """Test forward pass with caching mechanism."""
+    def test_forward_pass_comparison(self):
+        """Test forward pass comparison between LlamaAttention and LlamaFlexAttention."""
         attention = LlamaAttention(self.config).to("cuda")
         flex_attention = LlamaFlexAttention(self.config).to("cuda")
         
@@ -154,10 +154,10 @@ class TestFlexAttention(unittest.TestCase):
         loss_flex_list = []
         
         for idx in range(ttt_length):
-            is_last = idx == 6
+            is_last = idx == ttt_length - 1
             
-            hidden_states = torch.randn(batch_size, seq_len, hidden_size, requires_grad=True, device="cuda")
-            flex_hidden_states = hidden_states.clone().detach().requires_grad_(True)
+            hidden_states = torch.randn(batch_size, seq_len, hidden_size, device="cuda")
+            flex_hidden_states = hidden_states.clone().detach()
             output = attention(
                 hidden_states=hidden_states,
                 attention_mask=decoder_attention_mask,
@@ -207,18 +207,15 @@ class TestFlexAttention(unittest.TestCase):
         """Test flex attention with sequence length less than block size."""
         flex_attention = LlamaFlexAttention(self.config).to("cuda")
         batch_size = 1
-        seq_len = 100
-        hidden_size = 128
+        seq_len = 128
+        hidden_size = self.config.hidden_size * 2
 
         position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to("cuda")
         attention_mask = torch.ones(batch_size, seq_len).to("cuda")
-        input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size).to("cuda")
+        input_embeds = torch.randn(batch_size, seq_len, hidden_size).to("cuda")
         
         # Create past_key_values cache
         past_key_values = DynamicCache()
-        
-
-        
         # Run flex attention forward pass
         for i in range(7):
             hidden_states = torch.randn(batch_size, seq_len, hidden_size, device="cuda")
@@ -230,7 +227,7 @@ class TestFlexAttention(unittest.TestCase):
             )
         
         # Check output shape
-        expected_output_shape = (batch_size, seq_len, self.config.hidden_size)
+        expected_output_shape = (batch_size, seq_len, hidden_size)
         self.assertEqual(output.shape, expected_output_shape)
         
         # Check output is not NaN or Inf

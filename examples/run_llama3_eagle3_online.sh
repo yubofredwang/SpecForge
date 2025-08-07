@@ -12,8 +12,8 @@ torchrun \
     --draft-model-config $ROOT_DIR/configs/llama3-8B-eagle3.json \
     --train-data-path $ROOT_DIR/cache/dataset/sharegpt.jsonl \
     --output-dir $ROOT_DIR/outputs/llama3-8b-eagle3 \
-    --num-epochs 1 \
-    --batch-size 1 \
+    --num-epochs 2 \
+    --batch-size 2 \
     --learning-rate 1e-4 \
     --max-length 2048 \
     --chat-template llama3 \
@@ -22,5 +22,5 @@ torchrun \
     --mlflow-experiment $USER/llama3-8b-eagle3-specforge \
     --mlflow-run-name $USER/llama3-8b-eagle3-specforge-run-$(date +%Y%m%d-%H%M%S) \
     --mlflow-tracking-uri http://mlflow.grid1.ard.grid.linkedin.com:31812 \
-    --eval-data-split 0.01
-    # --attention-backend flex_attention \
+    --eval-data-split 0.01 \
+    --attention-backend flex_attention
