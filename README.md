@@ -57,7 +57,7 @@ We provide two orthogonal paths so everyone can start training in minutes, regar
 > **Why does disk matter?**
 > During Eagle3 training, the frozen target model will first generate the hidden states for each token given the data sample. The hidden states are fed to the draft model for training.
 > Offline mode stores these hidden states to the local disk, so a small disk can be filled up fast.
-> Online mode only generates these hidden states on the fly without storing them to the disk, but needs to keep the draft model alive during training, trading GPU RAM for almost-zero disk footprint.
+> Online mode only generates these hidden states on the fly without storing them to the disk, but needs to keep the target model resident in memory during training, trading GPU RAM for almost-zero disk footprint.
 
 ### ⚡️ SGLang-ready
 
@@ -73,6 +73,19 @@ To install this project, you can simply run the following command.
 ```bash
 pip install -v .
 ```
+
+## 🤖 Available Models
+
+<div align="center">
+
+| 🎯 Base Model | 📦 Draft Model | 🔢 Parameters | 🚀 Speedup | 📏 Avg Acceptance Length |
+|:--------------|:---------------|:-------------:|:-----------:|:------------------------:|
+| Llama-4-Maverick-17B-128E-Instruct | [EAGLE3-Llama-4-Maverick](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Maverick-17B-128E-Instruct-v1) | `1.88B` | **2.1x** | `3.430` |
+| Llama-4-Scout-17B-16E-Instruct | [EAGLE3-Llama-4-Scout](https://huggingface.co/lmsys/sglang-EAGLE3-Llama-4-Scout-17B-16E-Instruct-v1) | `1.88B` | **2.1x** | `3.028` |
+| Qwen3-235B-A22B | [Qwen3-235B-A22B-EAGLE3](https://huggingface.co/lmsys/Qwen3-235B-A22B-EAGLE3) | `1.21B` | **1.9x** | `3.538` |
+
+</div>
+
 
 ## 📝 Data Preparation
 
