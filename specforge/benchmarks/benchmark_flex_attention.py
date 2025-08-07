@@ -7,7 +7,7 @@ from specforge.modeling.draft.llama3_eagle import (
     LlamaFlexAttention,
     prepare_decoder_attention_mask,
 )
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache, StaticCache
 from specforge.utils import padding
 
 
@@ -26,7 +26,9 @@ config = LlamaConfig(**config_dict)
 
 def run_attention(seq_len: int, attention_backend: str = "sdpa"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+    batch_size = 4
+    hidden_size = config.hidden_size * 2
+    ttt_length = 7
     # Initialize cache and attention function based on backend
     if attention_backend == "sdpa":
         cache_hidden = [[], []]
@@ -34,13 +36,18 @@ def run_attention(seq_len: int, attention_backend: str = "sdpa"):
         attn_func = LlamaAttention(config).to(device)
     elif attention_backend == "flex_attention":
         cache_hidden = None
-        past_key_values = DynamicCache()
+        past_key_values = StaticCache(
+            config,
+            max_batch_size=batch_size,
+            max_cache_len=ttt_length * seq_len,
+            device=device,
+            dtype=torch.bfloat16,
+        )
         attn_func = LlamaFlexAttention(config).to(device)
     else:
         raise ValueError(f"Unknown attention backend: {attention_backend}")
 
-    batch_size = 4
-    hidden_size = config.hidden_size * 2
+
 
     # Simulate inputs - move to device
     position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to(device)
@@ -54,10 +61,10 @@ def run_attention(seq_len: int, attention_backend: str = "sdpa"):
     )
 
     loss_list = []
-    ttt_length = 7
+
     
     for idx in range(ttt_length):
-        is_last = idx == 6
+        is_last = idx == ttt_length - 1
         hidden_states = torch.randn(batch_size, seq_len, hidden_size, requires_grad=True).to(device)
         
         # Call attention function with appropriate parameters
@@ -118,6 +125,22 @@ def benchmark_function(attention_backend: str, seq_lengths: list):
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
     
+    # Initialize profiler for flex attention backend
+    profiler = None
+    if attention_backend == "flex_attention":
+        profiler = torch.profiler.profile(
+            activities=[
+                # torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=1, repeat=0),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(f"./profiler_logs/{attention_backend}"),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        )
+        profiler.start()
+    
     # Start timer
     start_time = time.time()
     
@@ -126,10 +149,19 @@ def benchmark_function(attention_backend: str, seq_lengths: list):
     if torch.cuda.is_available():
         initial_memory = torch.cuda.memory_allocated()
 
-    for seq_len in seq_lengths:
+    step_count = 0
+    for i, seq_len in enumerate(seq_lengths):
+        if profiler and step_count < 3:
+            step_count += 1
+            profiler.step(step_count)
         run_attention(seq_len, attention_backend)
 
     end_time = time.time()
+    
+    # Stop profiler for flex attention
+    if profiler:
+        profiler.stop()
+        print(f"Profiler traces saved to ./profiler_logs/{attention_backend}")
     
     peak_memory = 0
     current_memory = 0

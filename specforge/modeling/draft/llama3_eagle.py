@@ -9,11 +9,10 @@ from transformers import GenerationMixin, LlamaConfig, PreTrainedModel
 from transformers.activations import ACT2FN
 from transformers.models.llama.configuration_llama import LlamaConfig
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-from transformers.cache_utils import Cache, DynamicCache
 from specforge.modeling.draft.eagle3_flex_mask import generate_eagle3_mask
 from transformers.utils import is_torchdynamo_compiling
+from transformers.cache_utils import Cache
 
-from ..utils import padding
 from .base import Eagle3DraftModel
 
 logger = logging.getLogger(__name__)

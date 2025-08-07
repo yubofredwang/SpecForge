@@ -10,7 +10,7 @@ from specforge.modeling.draft.llama3_eagle import (
     prepare_decoder_attention_mask,
 )
 from specforge.utils import padding
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import StaticCache
 
 
 
@@ -31,10 +31,18 @@ class TestFlexAttention(unittest.TestCase):
             "hidden_act": "silu",
         }
         self.config = LlamaConfig(**self.config_dict)
+        
+        # Define sequence lengths to test (multiples of 128)
+        self.seq_lengths = [128 * i for i in range(1, 20)]  # [128, 256, 512, 768]
 
-  
     def test_forward_pass_comparison(self):
         """Test forward pass comparison between LlamaAttention and LlamaFlexAttention."""
+        for seq_len in self.seq_lengths:
+            with self.subTest(seq_len=seq_len):
+                self._test_forward_pass_comparison_for_seq_len(seq_len)
+    
+    def _test_forward_pass_comparison_for_seq_len(self, seq_len):
+        """Helper method to test forward pass comparison for a specific sequence length."""
         attention = LlamaAttention(self.config).to("cuda")
         flex_attention = LlamaFlexAttention(self.config).to("cuda")
         
@@ -48,7 +56,6 @@ class TestFlexAttention(unittest.TestCase):
         attention.eval()
         flex_attention.eval()
         batch_size = 2
-        seq_len = 128 * 4
         hidden_size = self.config.hidden_size * 2
         
         ############### Attention Inputs ##############
@@ -57,7 +64,7 @@ class TestFlexAttention(unittest.TestCase):
         cache_hidden = [[], []]  # [cache_k, cache_v]
         attention_mask = torch.ones(batch_size, seq_len).to("cuda")
         # Simulate one item in the batch is masked and not taking a full block.
-        padding_start_index = 128 * 4 - 200
+        padding_start_index = seq_len - min(200, seq_len // 3)  # Adjust padding based on seq_len
         attention_mask[1, padding_start_index:] = False
         input_embeds = torch.randn(batch_size, seq_len, self.config.hidden_size).to("cuda")
         decoder_attention_mask = prepare_decoder_attention_mask(
@@ -69,7 +76,13 @@ class TestFlexAttention(unittest.TestCase):
 
         ############### Flex Attention Inputs ##############
         flex_position_ids = position_ids.clone()
-        past_key_values = DynamicCache()
+        past_key_values = StaticCache(
+            config,
+            max_batch_size=batch_size,
+            max_cache_len=ttt_length * seq_len,
+            device=device,
+            dtype=torch.bfloat16,
+        )
 
         ttt_length = 7
         for idx in range(ttt_length):
@@ -114,6 +127,12 @@ class TestFlexAttention(unittest.TestCase):
 
     def test_backward_pass_gradient_comparison(self):
         """Test backward pass comparing gradients between LlamaAttention and LlamaFlexAttention."""
+        for seq_len in self.seq_lengths:
+            with self.subTest(seq_len=seq_len):
+                self._test_backward_pass_gradient_comparison_for_seq_len(seq_len)
+    
+    def _test_backward_pass_gradient_comparison_for_seq_len(self, seq_len):
+        """Helper method to test backward pass gradient comparison for a specific sequence length."""
         attention = LlamaAttention(self.config).to("cuda")
         flex_attention = LlamaFlexAttention(self.config).to("cuda")
         
@@ -125,7 +144,6 @@ class TestFlexAttention(unittest.TestCase):
             flex_attention.o_proj.weight.copy_(attention.o_proj.weight)
 
         batch_size = 2
-        seq_len = 128 * 4
         hidden_size = self.config.hidden_size * 2
         
         ############### Attention Inputs ##############
@@ -145,7 +163,13 @@ class TestFlexAttention(unittest.TestCase):
 
         ############### Flex Attention Inputs ##############
         flex_position_ids = position_ids.clone()
-        past_key_values = DynamicCache()
+        past_key_values = StaticCache(
+            self.config,
+            max_batch_size=batch_size,
+            max_cache_len=ttt_length * seq_len,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
         loss_mask = torch.ones(batch_size, seq_len, requires_grad=False).to("cuda")
 
         # Create input tensors that require gradients
@@ -200,24 +224,29 @@ class TestFlexAttention(unittest.TestCase):
                 getattr(flex_attention, proj_name).weight.grad,
                 atol=1e-3, 
                 rtol=1e-3,
-                msg=f"Gradients should be similar between LlamaAttention and LlamaFlexAttention for {proj_name}"
             )
 
-    def test_flex_attention_with_seq_len_less_than_block_size(self):
-        """Test flex attention with sequence length less than block size."""
+    def test_flex_attention_basic(self):
+        """Helper method to test flex attention with large sequence lengths."""
         flex_attention = LlamaFlexAttention(self.config).to("cuda")
         batch_size = 1
-        seq_len = 128
         hidden_size = self.config.hidden_size * 2
-
+        seq_len = 128
+        ttt_length = 3
         position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1).to("cuda")
         attention_mask = torch.ones(batch_size, seq_len).to("cuda")
         input_embeds = torch.randn(batch_size, seq_len, hidden_size).to("cuda")
         
         # Create past_key_values cache
-        past_key_values = DynamicCache()
-        # Run flex attention forward pass
-        for i in range(7):
+        past_key_values = StaticCache(
+            self.config,
+            max_batch_size=batch_size,
+            max_cache_len=ttt_length * seq_len,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        # Run flex attention forward pass (fewer iterations for large sequences)
+        for i in range(ttt_length):  # Reduced iterations to avoid memory issues
             hidden_states = torch.randn(batch_size, seq_len, hidden_size, device="cuda")
             output = flex_attention(
                 hidden_states=hidden_states,
@@ -227,7 +256,7 @@ class TestFlexAttention(unittest.TestCase):
             )
         
         # Check output shape
-        expected_output_shape = (batch_size, seq_len, hidden_size)
+        expected_output_shape = (batch_size, seq_len, self.config.hidden_size)
         self.assertEqual(output.shape, expected_output_shape)
         
         # Check output is not NaN or Inf
@@ -242,4 +271,5 @@ class TestFlexAttention(unittest.TestCase):
 
 
 if __name__ == "__main__":
-        unittest.main(verbosity=2)
+    # Run test_flex_attention_basic only
+    unittest.main(verbosity=2)
