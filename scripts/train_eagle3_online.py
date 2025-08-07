@@ -219,6 +219,7 @@ def main():
     if args.eval_data_split is not None:
         assert args.eval_data_path is None, "eval_data_path must be None when eval_data_split is provided!"
         train_eagle3_dataset, eval_eagle3_dataset = train_eagle3_dataset.train_test_split(test_size=0.01, seed=0)
+        print(f"Split train and eval dataset, train size: {len(train_eagle3_dataset)}, eval size: {len(eval_eagle3_dataset)}")
 
     train_dataloader = prepare_dp_dataloaders(
         train_eagle3_dataset,

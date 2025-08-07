@@ -33,7 +33,7 @@ def main():
     
     Usage:
     python ./scripts/build_eagle3_dataset.py  \
-        --data-path "cache/dataset/sharegpt.jsonl,cache/dataset/ultrachat.jsonl" \
+        --data-path "cache/dataset/sharegpt.jsonl" \
         --model-path /shared/public/models/meta-llama/Meta-Llama-3.1-8B-Instruct \
         --chat-template llama3
     """

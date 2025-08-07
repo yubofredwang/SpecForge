@@ -21,6 +21,6 @@ torchrun \
     --logger-backend mlflow \
     --mlflow-experiment $USER/llama3-8b-eagle3-specforge \
     --mlflow-run-name $USER/llama3-8b-eagle3-specforge-run-$(date +%Y%m%d-%H%M%S) \
-    --mlflow-tracking-uri https://mlflow.prod.linkedin.com \
+    --mlflow-tracking-uri http://mlflow.grid1.ard.grid.linkedin.com:31812 \
     --eval-data-split 0.01
     # --attention-backend flex_attention \
