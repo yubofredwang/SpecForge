@@ -1,18 +1,20 @@
-import torch
-import time
-import gc
 import argparse
+import gc
+import time
+
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+import torch._dynamo as dynamo
 from transformers import LlamaConfig
+from transformers.cache_utils import DynamicCache
+
 from specforge.modeling.draft.llama3_eagle import (
     LlamaAttention,
     LlamaFlexAttention,
     prepare_decoder_attention_mask,
 )
-from transformers.cache_utils import DynamicCache
 from specforge.utils import padding
-import torch._dynamo as dynamo
 
 dynamo.config.recompile_limit = 64
 
@@ -33,7 +35,13 @@ TTT_LENGTH = 7
 BATCH_SIZE = 4
 HIDDEN_SIZE = config.hidden_size * 2
 
-def run_attention(seq_len: int, hidden_states_list: list[torch.Tensor], attention_backend: str = "sdpa", enable_profile: bool = False):
+
+def run_attention(
+    seq_len: int,
+    hidden_states_list: list[torch.Tensor],
+    attention_backend: str = "sdpa",
+    enable_profile: bool = False,
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size = hidden_states_list[0].shape[0]
     # Initialize cache and attention function based on backend
@@ -67,7 +75,9 @@ def run_attention(seq_len: int, hidden_states_list: list[torch.Tensor], attentio
                 torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA,
             ],
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(f"./profiler_logs/{attention_backend}"),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                f"./profiler_logs/{attention_backend}"
+            ),
             record_shapes=False,
             profile_memory=False,
             with_stack=True,
@@ -85,7 +95,7 @@ def run_attention(seq_len: int, hidden_states_list: list[torch.Tensor], attentio
                 position_ids=position_ids,
                 cache_hidden=cache_hidden,
                 output_attentions=False,
-                use_cache=True
+                use_cache=True,
             )
         else:  # flex_attention
             output = attn_func(
@@ -94,9 +104,9 @@ def run_attention(seq_len: int, hidden_states_list: list[torch.Tensor], attentio
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 output_attentions=False,
-                use_cache=True
+                use_cache=True,
             )
-        
+
         # Compute a simple loss for benchmarking
         loss = output[0].sum()
         loss_list.append(loss)
@@ -106,8 +116,10 @@ def run_attention(seq_len: int, hidden_states_list: list[torch.Tensor], attentio
             ind = torch.arange(seq_len, device=decoder_attention_mask.device)
             ind0 = ind[idx:]
             ind1 = ind[: seq_len - idx]
-            decoder_attention_mask[:, :, ind0, ind1] = torch.finfo(decoder_attention_mask.dtype).min
-    
+            decoder_attention_mask[:, :, ind0, ind1] = torch.finfo(
+                decoder_attention_mask.dtype
+            ).min
+
     # Compute mean loss and backward pass
     if loss_list:
         mean_loss = sum(loss_list) / len(loss_list)
@@ -116,20 +128,26 @@ def run_attention(seq_len: int, hidden_states_list: list[torch.Tensor], attentio
     if attention_backend == "flex_attention" and enable_profile:
         profiler.stop()
 
-def benchmark_function(attention_backend: str, seq_lengths: list, enable_profile: bool = False, enable_warmup: bool = True):
+
+def benchmark_function(
+    attention_backend: str,
+    seq_lengths: list,
+    enable_profile: bool = False,
+    enable_warmup: bool = True,
+):
     """Benchmark a function for speed and GPU memory usage per sequence length."""
     print(f"\n=== Benchmarking {attention_backend} ===")
-    
+
     results_per_seq_len = []
-    
+
     for seq_len in seq_lengths:
         print(f"\nTesting sequence length: {seq_len}")
-        
+
         # Clear GPU cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
-        
+
         # Warm up runs for this sequence length
         if enable_warmup:
             print("Warming up...")
@@ -150,12 +168,12 @@ def benchmark_function(attention_backend: str, seq_lengths: list, enable_profile
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.reset_peak_memory_stats()
-        
+
         # Record initial memory
         initial_memory = 0
         if torch.cuda.is_available():
             initial_memory = torch.cuda.memory_allocated()
-        
+
         hidden_states = [
             torch.randn(
                 BATCH_SIZE,
@@ -168,107 +186,146 @@ def benchmark_function(attention_backend: str, seq_lengths: list, enable_profile
             for _ in range(TTT_LENGTH)
         ]
         start_time = time.time()
-        run_attention(seq_len, hidden_states, attention_backend, enable_profile and seq_len == seq_lengths[0])
+        run_attention(
+            seq_len,
+            hidden_states,
+            attention_backend,
+            enable_profile and seq_len == seq_lengths[0],
+        )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         end_time = time.time()
-        
+
         # Record memory usage
         peak_memory = 0
         current_memory = 0
         if torch.cuda.is_available():
             peak_memory = torch.cuda.max_memory_allocated()
             current_memory = torch.cuda.memory_allocated()
-        
-        results_per_seq_len.append({
-            'seq_len': seq_len,
-            'time': end_time - start_time,
-            'peak_memory': peak_memory,
-            'memory_increase': current_memory - initial_memory
-        })
-        
+
+        results_per_seq_len.append(
+            {
+                "seq_len": seq_len,
+                "time": end_time - start_time,
+                "peak_memory": peak_memory,
+                "memory_increase": current_memory - initial_memory,
+            }
+        )
+
         print(f"  Time: {end_time - start_time:.3f}s")
         print(f"  Peak memory: {peak_memory / 1024**3:.3f} GB")
-    
+
     return results_per_seq_len
+
 
 def plot_results(eagle_results, flex_results, seq_lengths):
     """Plot speed and memory comparison between Eagle and Flex attention."""
-    
+
     # Extract data for plotting
-    eagle_times = [r['time'] for r in eagle_results]
-    flex_times = [r['time'] for r in flex_results]
-    eagle_memory = [r['peak_memory'] / 1024**3 for r in eagle_results]  # Convert to GB
-    flex_memory = [r['peak_memory'] / 1024**3 for r in flex_results]  # Convert to GB
-    
+    eagle_times = [r["time"] for r in eagle_results]
+    flex_times = [r["time"] for r in flex_results]
+    eagle_memory = [r["peak_memory"] / 1024**3 for r in eagle_results]  # Convert to GB
+    flex_memory = [r["peak_memory"] / 1024**3 for r in flex_results]  # Convert to GB
+
     # Create subplots
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
+
     # Speed comparison plot
-    ax1.plot(seq_lengths, eagle_times, 'b-o', label='Eagle (SDPA)', linewidth=2, markersize=8)
-    ax1.plot(seq_lengths, flex_times, 'r-s', label='Flex Attention', linewidth=2, markersize=8)
-    ax1.set_xlabel('Sequence Length')
-    ax1.set_ylabel('Time (seconds)')
-    ax1.set_title('Speed Comparison: Eagle vs Flex Attention')
+    ax1.plot(
+        seq_lengths, eagle_times, "b-o", label="Eagle (SDPA)", linewidth=2, markersize=8
+    )
+    ax1.plot(
+        seq_lengths,
+        flex_times,
+        "r-s",
+        label="Flex Attention",
+        linewidth=2,
+        markersize=8,
+    )
+    ax1.set_xlabel("Sequence Length")
+    ax1.set_ylabel("Time (seconds)")
+    ax1.set_title("Speed Comparison: Eagle vs Flex Attention")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
-    ax1.set_xscale('linear')
-    ax1.set_yscale('log')
-    
+    ax1.set_xscale("linear")
+    ax1.set_yscale("log")
+
     # Memory comparison plot
-    ax2.plot(seq_lengths, eagle_memory, 'b-o', label='Eagle (SDPA)', linewidth=2, markersize=8)
-    ax2.plot(seq_lengths, flex_memory, 'r-s', label='Flex Attention', linewidth=2, markersize=8)
-    ax2.set_xlabel('Sequence Length')
-    ax2.set_ylabel('Peak Memory (GB)')
-    ax2.set_title('Memory Usage Comparison: Eagle vs Flex Attention')
+    ax2.plot(
+        seq_lengths,
+        eagle_memory,
+        "b-o",
+        label="Eagle (SDPA)",
+        linewidth=2,
+        markersize=8,
+    )
+    ax2.plot(
+        seq_lengths,
+        flex_memory,
+        "r-s",
+        label="Flex Attention",
+        linewidth=2,
+        markersize=8,
+    )
+    ax2.set_xlabel("Sequence Length")
+    ax2.set_ylabel("Peak Memory (GB)")
+    ax2.set_title("Memory Usage Comparison: Eagle vs Flex Attention")
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
     # Set y-axis ticks every 10GB
     max_memory = max(max(eagle_memory), max(flex_memory))
     ax2.set_yticks(np.arange(0, max_memory + 10, 10))
-    
+
     plt.tight_layout()
-    plt.savefig('attention_benchmark_comparison.png', dpi=300, bbox_inches='tight')
+    plt.savefig("attention_benchmark_comparison.png", dpi=300, bbox_inches="tight")
     plt.show()
-    
+
     # Print summary statistics
     print(f"\n=== Performance Summary ===")
     print(f"Sequence lengths tested: {seq_lengths}")
     print(f"\nSpeed ratios (Eagle/Flex):")
     for i, seq_len in enumerate(seq_lengths):
-        ratio = eagle_times[i] / flex_times[i] if flex_times[i] > 0 else float('inf')
+        ratio = eagle_times[i] / flex_times[i] if flex_times[i] > 0 else float("inf")
         print(f"  {seq_len:4d}: {ratio:.2f}x")
-    
+
     print(f"\nMemory ratios (Eagle/Flex):")
     for i, seq_len in enumerate(seq_lengths):
-        ratio = eagle_memory[i] / flex_memory[i] if flex_memory[i] > 0 else float('inf')
+        ratio = eagle_memory[i] / flex_memory[i] if flex_memory[i] > 0 else float("inf")
         print(f"  {seq_len:4d}: {ratio:.2f}x")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark attention mechanisms")
-    parser.add_argument("--enable-profile", action="store_true", help="Enable profiling")
+    parser.add_argument(
+        "--enable-profile", action="store_true", help="Enable profiling"
+    )
     args = parser.parse_args()
 
     print("PyTorch version:", torch.__version__)
     if torch.cuda.is_available():
         print("CUDA available:", torch.cuda.is_available())
         print("GPU:", torch.cuda.get_device_name())
-        print("GPU memory:", torch.cuda.get_device_properties(0).total_memory / 1024**3, "GB")
+        print(
+            "GPU memory:",
+            torch.cuda.get_device_properties(0).total_memory / 1024**3,
+            "GB",
+        )
     else:
         print("CUDA not available - running on CPU")
-    
+
     # Define sequence lengths to test
     seq_lengths = [128 * i for i in range(1, 28, 4)]
 
     print(f"Testing sequence lengths: {seq_lengths}")
-    
+
     # Run benchmarks
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     eagle_results = benchmark_function("sdpa", seq_lengths)
-    print("\n" + "="*50)
-    flex_results = benchmark_function("flex_attention", seq_lengths, enable_profile=args.enable_profile)
+    print("\n" + "=" * 50)
+    flex_results = benchmark_function(
+        "flex_attention", seq_lengths, enable_profile=args.enable_profile
+    )
 
     # Plot results
     plot_results(eagle_results, flex_results, seq_lengths)

@@ -29,7 +29,7 @@ def parse_args():
 def main():
     """
     Separated script to build eagle3 dataset from the training.
-    
+
     Usage:
     python ./scripts/build_eagle3_dataset.py  \
         --data-path "cache/dataset/sharegpt.jsonl" \

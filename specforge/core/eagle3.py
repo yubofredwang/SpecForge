@@ -25,10 +25,10 @@ from typing import List, Optional, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
+from transformers.cache_utils import DynamicCache
 
 from specforge.modeling.draft import Eagle3DraftModel
 from specforge.utils import padding
-from transformers.cache_utils import DynamicCache
 
 
 class Eagle3Model(nn.Module):
@@ -47,7 +47,13 @@ class OnlineEagle3Model(Eagle3Model):
     5. finally, we run TTT to train the draft model. input size is (batch, seq_len, hidden_size * 2)
     """
 
-    def __init__(self, target_model, draft_model: Eagle3DraftModel, length: int = 7, attention_backend="sdpa"):
+    def __init__(
+        self,
+        target_model,
+        draft_model: Eagle3DraftModel,
+        length: int = 7,
+        attention_backend="sdpa",
+    ):
         """
         Args:
             target_model: the target model to extract hidden states.
@@ -265,7 +271,9 @@ class OnlineEagle3Model(Eagle3Model):
                     ind = torch.arange(seq_length, device=attention_mask.device)
                     ind0 = ind[idx:]
                     ind1 = ind[: seq_length - idx]
-                    attention_mask[:, :, ind0, ind1] = torch.finfo(attention_mask.dtype).min
+                    attention_mask[:, :, ind0, ind1] = torch.finfo(
+                        attention_mask.dtype
+                    ).min
                 # Flex attention mask shirnking is handled inside attention module
         return plosses, vlosses, acces
 
@@ -431,6 +439,8 @@ class OfflineEagle3Model(Eagle3Model):
                     ind = torch.arange(seq_length, device=attention_mask.device)
                     ind0 = ind[idx:]
                     ind1 = ind[: seq_length - idx]
-                    attention_mask[:, :, ind0, ind1] = torch.finfo(attention_mask.dtype).min
+                    attention_mask[:, :, ind0, ind1] = torch.finfo(
+                        attention_mask.dtype
+                    ).min
                 # Flex attention mask shirnking is handled inside attention module
         return plosses, vlosses, acces

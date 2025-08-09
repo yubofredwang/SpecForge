@@ -5,12 +5,16 @@ from typing import List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention.flex_attention import create_block_mask
 from transformers import GenerationMixin, LlamaConfig, PreTrainedModel
 from transformers.activations import ACT2FN
-from transformers.models.llama.configuration_llama import LlamaConfig
-from torch.nn.attention.flex_attention import create_block_mask
-from specforge.modeling.draft.flex_attention import generate_eagle3_mask, compile_friendly_flex_attention
 from transformers.cache_utils import Cache
+from transformers.models.llama.configuration_llama import LlamaConfig
+
+from specforge.modeling.draft.flex_attention import (
+    compile_friendly_flex_attention,
+    generate_eagle3_mask,
+)
 
 from .base import Eagle3DraftModel
 
@@ -97,7 +101,9 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     return q_embed, k_embed
 
 
-def prepare_decoder_attention_mask(attention_mask, input_shape, inputs_embeds, past_key_values_length):
+def prepare_decoder_attention_mask(
+    attention_mask, input_shape, inputs_embeds, past_key_values_length
+):
     # create causal mask
     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
     combined_attention_mask = None
@@ -436,7 +442,9 @@ class LlamaFlexAttention(LlamaAttention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
-        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        past_seen_tokens = (
+            past_key_values.get_seq_length() if past_key_values is not None else 0
+        )
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -451,7 +459,7 @@ class LlamaFlexAttention(LlamaAttention):
         value_states = value_states.view(
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
-        
+
         lck = past_seen_tokens // q_len
         cos, sin = self.rotary_emb(query_states, seq_len=q_len + lck)
         cos, sin = cos.to(query_states.device), sin.to(query_states.device)
@@ -464,11 +472,11 @@ class LlamaFlexAttention(LlamaAttention):
             past_seen_tokens, past_seen_tokens + q_len, device=hidden_states.device
         )
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        
+
         key_cache, value_cache = past_key_values.update(
             key_states,
             value_states,
-            layer_idx=0, # TODO: support multiple layers
+            layer_idx=0,  # TODO: support multiple layers
             cache_kwargs=cache_kwargs,
         )
 
@@ -476,7 +484,7 @@ class LlamaFlexAttention(LlamaAttention):
         # Shrink the attention mask to align with the padding to the right.
         # This is equivalent to the shrinking logic in eagle3.py
         seq_lengths -= lck
-        
+
         block_mask = create_block_mask(
             mask_mod=generate_eagle3_mask(
                 seq_lengths=seq_lengths,
@@ -485,7 +493,7 @@ class LlamaFlexAttention(LlamaAttention):
                 shift_left=lck,
             ),
             B=bsz,
-            H=1, # Rely on broadcast
+            H=1,  # Rely on broadcast
             Q_LEN=q_len,
             KV_LEN=key_cache.shape[-2],
             device=query_states.device,
@@ -497,7 +505,7 @@ class LlamaFlexAttention(LlamaAttention):
         attn_output = compile_friendly_flex_attention(
             query=query_states,
             key=key_cache.contiguous(),
-            value=value_cache.contiguous(), 
+            value=value_cache.contiguous(),
             block_mask=block_mask,
             enable_gqa=True,
         )

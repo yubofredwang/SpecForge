@@ -1,14 +1,14 @@
-from typing import Optional, List, Tuple, ClassVar
+from typing import ClassVar, List, Optional, Tuple
 
+import torch
+import torch._dynamo as dynamo
 from torch.nn.attention.flex_attention import (
-    or_masks,
     and_masks,
     create_block_mask,
     flex_attention,
+    or_masks,
 )
-import torch
 from transformers.utils import is_torchdynamo_compiling
-import torch._dynamo as dynamo
 
 dynamo.config.recompile_limit = 64
 
@@ -54,7 +54,9 @@ def compile_friendly_flex_attention(
 ) -> torch.Tensor:
     # First call initialise singleton wrapper object, second call invokes the object method to return compiled flex attention
     # Do not use compiled version if already compiling forward (it raises issues)
-    flex_attention_compiled = WrappedFlexAttention()() if not is_torchdynamo_compiling() else flex_attention
+    flex_attention_compiled = (
+        WrappedFlexAttention()() if not is_torchdynamo_compiling() else flex_attention
+    )
     return flex_attention_compiled(
         query,
         key,
@@ -63,7 +65,9 @@ def compile_friendly_flex_attention(
     )
 
 
-def generate_eagle3_mask(seq_lengths: torch.Tensor, Q_LEN: int, KV_LEN: int, shift_left: int = 0):
+def generate_eagle3_mask(
+    seq_lengths: torch.Tensor, Q_LEN: int, KV_LEN: int, shift_left: int = 0
+):
 
     def causal_mask(b, h, q_idx, kv_idx):
         # Causal will keep shrinking by 1 diagnol due to appended suffix
@@ -92,16 +96,22 @@ def test_eagle3_flex_mask():
     KV_LEN = S * 3
     data_type = torch.bfloat16
     query = torch.randn(B, H, S, D, device="cuda", dtype=data_type, requires_grad=True)
-    key_cache = torch.randn(B, H, KV_LEN, D, device="cuda", dtype=data_type, requires_grad=True)
-    value_cache = torch.randn(B, H, KV_LEN, D, device="cuda", dtype=data_type, requires_grad=True)
+    key_cache = torch.randn(
+        B, H, KV_LEN, D, device="cuda", dtype=data_type, requires_grad=True
+    )
+    value_cache = torch.randn(
+        B, H, KV_LEN, D, device="cuda", dtype=data_type, requires_grad=True
+    )
     seq_lengths = torch.tensor([S], device="cuda", dtype=torch.int32)
     block_mask = create_block_mask(
-        mask_mod=generate_eagle3_mask(seq_lengths=seq_lengths, Q_LEN=Q_LEN, KV_LEN=KV_LEN, shift_left=128 * 2),
-        B=1, 
+        mask_mod=generate_eagle3_mask(
+            seq_lengths=seq_lengths, Q_LEN=Q_LEN, KV_LEN=KV_LEN, shift_left=128 * 2
+        ),
+        B=1,
         H=1,
         Q_LEN=Q_LEN,
         KV_LEN=KV_LEN,
-        device=query.device
+        device=query.device,
     )
 
     dense_mask = block_mask.to_dense()
@@ -114,4 +124,3 @@ def test_eagle3_flex_mask():
 
 if __name__ == "__main__":
     test_eagle3_flex_mask()
-
