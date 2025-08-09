@@ -2,6 +2,8 @@
 
 Flex attention saves 10x memory and also makes training faster. It is currently in experimental stage. To enable flex attention, you need to pass `--attention-backend flex_attention` to the training script. To allow sharing of compiled kernels, you need to set `TORCHINDUCTOR_CACHE_DIR` to the cache directory.
 
+> <b> Note: Make sure you install torch 2.8.0!</b>
+
 Example training script:
 ```bash
 TORCHINDUCTOR_CACHE_DIR=$ROOT_DIR/cache/compiled_kernels \
