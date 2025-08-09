@@ -18,6 +18,57 @@ from .base import Eagle3DraftModel
 logger = logging.getLogger(__name__)
 
 
+# Reference Implementation https://github.com/huggingface/transformers/blob/main/src/transformers/integrations/flex_attention.py
+class WrappedFlexAttention:
+    """
+    We are doing a singleton class so that flex attention is compiled once when it's first called.
+    """
+
+    _instance = None
+    _is_flex_compiled = False
+    _compiled_flex_attention = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            # Create a new instance if one doesn't already exist
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @torch.compiler.disable(recursive=False)
+    def __init__(self):
+        """
+        Initialize or update the singleton instance.
+        """
+        if not self._is_flex_compiled:
+            # Enable dynamic shapes to handle different input sizes
+            self._compiled_flex_attention = torch.compile(
+                flex_attention,
+                dynamic=True,
+                # mode="max-autotune-no-cudagraphs",
+            )
+            self._is_flex_compiled = True
+
+    def __call__(self):
+        return self._compiled_flex_attention
+
+
+def compile_friendly_flex_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    **kwargs,
+) -> torch.Tensor:
+    # First call initialise singleton wrapper object, second call invokes the object method to return compiled flex attention
+    # Do not use compiled version if already compiling forward (it raises issues)
+    flex_attention_compiled = WrappedFlexAttention()() if not is_torchdynamo_compiling() else flex_attention
+    return flex_attention_compiled(
+        query,
+        key,
+        value,
+        **kwargs,
+    )
+
+
 # Copied from transformers.models.bart.modeling_bart._make_causal_mask
 def _make_causal_mask(
     input_ids_shape: torch.Size,
@@ -335,7 +386,7 @@ class LlamaAttention(nn.Module):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
-        if cache_hidden is None:
+        if cache_hidden is None and past_key_values is None:
             cos, sin = self.rotary_emb(query_states, seq_len=q_len)
             cos, sin = cos.to(query_states.device), sin.to(query_states.device)
             query_states, key_states = apply_rotary_pos_emb(
@@ -355,63 +406,130 @@ class LlamaAttention(nn.Module):
             )
 
         else:
-            lck = len(cache_hidden[0])
+            if cache_hidden is not None:
+                lck = len(cache_hidden[0])
+            else:
+                lck = past_key_values.get_seq_length() if past_key_values is not None else 0
 
             cos, sin = self.rotary_emb(query_states, seq_len=q_len + lck)
             cos, sin = cos.to(query_states.device), sin.to(query_states.device)
             query_states, key_states = apply_rotary_pos_emb(
                 query_states, key_states, cos, sin, position_ids + lck
             )
-
-            key_states = repeat_kv(key_states, self.num_key_value_groups)
-            value_states = repeat_kv(value_states, self.num_key_value_groups)
-
-            cache_hidden[0] = cache_hidden[0] + [key_states]
-            cache_hidden[1] = cache_hidden[1] + [value_states]
-
-            cache_k = cache_hidden[0]
-            cache_v = cache_hidden[1]
-
-            k0 = cache_k[0]
-            v0 = cache_v[0]
-
-            # causal
-            attn_weights = torch.matmul(query_states, k0.transpose(2, 3)) / math.sqrt(
-                self.head_dim
-            )
-            lck = len(cache_k)
-
-            attn_weights = attn_weights + attention_mask
-
-            for i in range(1, lck):
-                ki = cache_k[i]
-                qi = query_states
-                kiq = ki
-
-                attn_weightsi = (qi * kiq).sum(-1) / math.sqrt(self.head_dim)
-                attn_weights = torch.cat(
-                    (attn_weights, attn_weightsi[..., None]), dim=-1
+            if cache_hidden is not None:
+                # Using naive eagle attention for smaller sequence length
+                attn_output = self.eagle_naive_attention(
+                    query_states, key_states, value_states, attention_mask, cache_hidden
+                )
+            else:
+                # Using 
+                attn_output = self.eagle_flex_attention(
+                    query_states, key_states, value_states, attention_mask, past_key_values, lck
                 )
 
-            # upcast attention to fp32
-            attn_weights = nn.functional.softmax(
-                attn_weights, dim=-1, dtype=torch.float32
-            ).to(query_states.dtype)
-            attn_weights0 = attn_weights[..., :q_len]
 
-            attn_output = torch.matmul(attn_weights0, v0)
-
-            for i in range(1, lck):
-                vi = cache_v[i]
-                attn_weightsi = attn_weights[..., q_len + i - 1]
-                attn_outputi = attn_weightsi[..., None] * vi
-                attn_output = attn_output + attn_outputi
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(bsz, q_len, self.head_dim * self.num_heads)
 
         attn_output = self.o_proj(attn_output)
 
+        return attn_output
+
+    def eagle_naive_attention(self, query_states, key_states, value_states, attention_mask, cache_hidden):
+        bsz, _, q_len, _ = query_states.shape
+
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        cache_hidden[0] = cache_hidden[0] + [key_states]
+        cache_hidden[1] = cache_hidden[1] + [value_states]
+
+        cache_k = cache_hidden[0]
+        cache_v = cache_hidden[1]
+
+        k0 = cache_k[0]
+        v0 = cache_v[0]
+
+        # causal
+        attn_weights = torch.matmul(query_states, k0.transpose(2, 3)) / math.sqrt(
+            self.head_dim
+        )
+        lck = len(cache_k)
+
+        attn_weights = attn_weights + attention_mask
+
+        for i in range(1, lck):
+            ki = cache_k[i]
+            qi = query_states
+            kiq = ki
+
+            attn_weightsi = (qi * kiq).sum(-1) / math.sqrt(self.head_dim)
+            attn_weights = torch.cat(
+                (attn_weights, attn_weightsi[..., None]), dim=-1
+            )
+
+        # upcast attention to fp32
+        attn_weights = nn.functional.softmax(
+            attn_weights, dim=-1, dtype=torch.float32
+        ).to(query_states.dtype)
+        attn_weights0 = attn_weights[..., :q_len]
+
+        attn_output = torch.matmul(attn_weights0, v0)
+
+        for i in range(1, lck):
+            vi = cache_v[i]
+            attn_weightsi = attn_weights[..., q_len + i - 1]
+            attn_outputi = attn_weightsi[..., None] * vi
+            attn_output = attn_output + attn_outputi
+        return attn_output
+    
+    
+    def eagle_flex_attention(self, query_states, key_states, value_states, attention_mask, past_key_values, lck):
+        bsz, _, q_len, _ = query_states.shape
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+
+        cache_position: torch.Tensor = torch.arange(
+            past_seen_tokens, past_seen_tokens + q_len, device=query_states.device
+        )
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        
+        key_cache, value_cache = past_key_values.update(
+            key_states,
+            value_states,
+            layer_idx=self.layer_idx,
+            cache_kwargs=cache_kwargs,
+        )
+
+        seq_lengths = attention_mask.sum(dim=-1)
+        # Shrink the attention mask to align with the padding to the right.
+        # This is equivalent to the shirnking logic in eagle3.py
+        seq_lengths -= lck
+        
+        block_mask = create_block_mask(
+            mask_mod=generate_eagle3_mask(
+                seq_lengths=seq_lengths,
+                Q_LEN=q_len,
+                KV_LEN=key_cache.shape[-2],
+                shift_left=lck,
+            ),
+            B=bsz,
+            H=1, # Rely on broadcast
+            Q_LEN=q_len,
+            KV_LEN=key_cache.shape[-2],
+            device=query_states.device,
+            # TODO: enable compiling after fix TorchInductor's Triton code generation issue.
+            # See: https://github.com/pytorch/pytorch/issues/160018
+            # _compile=True,
+        )
+        # attn_output = compile_friendly_flex_attention(
+        attn_output = compile_friendly_flex_attention(
+            query=query_states,
+            key=key_cache.contiguous(),
+            value=value_cache.contiguous(), 
+            block_mask=block_mask,
+            enable_gqa=True,
+        )
         return attn_output
 
 
@@ -479,55 +597,6 @@ class LlamaRMSNorm(nn.Module):
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype)
 
-
-# Reference Implementation https://github.com/huggingface/transformers/blob/main/src/transformers/integrations/flex_attention.py
-class WrappedFlexAttention:
-    """
-    We are doing a singleton class so that flex attention is compiled once when it's first called.
-    """
-
-    _instance = None
-    _is_flex_compiled = False
-    _compiled_flex_attention = None
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            # Create a new instance if one doesn't already exist
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    @torch.compiler.disable(recursive=False)
-    def __init__(self):
-        """
-        Initialize or update the singleton instance.
-        """
-        if not self._is_flex_compiled:
-            # Enable dynamic shapes to handle different input sizes
-            self._compiled_flex_attention = torch.compile(
-                flex_attention, 
-                dynamic=True,
-            )
-            self._is_flex_compiled = True
-
-    def __call__(self):
-        return self._compiled_flex_attention
-
-
-def compile_friendly_flex_attention(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    **kwargs,
-) -> torch.Tensor:
-    # First call initialise singleton wrapper object, second call invokes the object method to return compiled flex attention
-    # Do not use compiled version if already compiling forward (it raises issues)
-    flex_attention_compiled = WrappedFlexAttention()() if not is_torchdynamo_compiling() else flex_attention
-    return flex_attention_compiled(
-        query,
-        key,
-        value,
-        **kwargs,
-    )
 
 class LlamaFlexAttention(nn.Module):
     
@@ -646,7 +715,7 @@ class LlamaFlexAttention(nn.Module):
         # Shrink the attention mask to align with the padding to the right.
         # This is equivalent to the shirnking logic in eagle3.py
         seq_lengths -= lck
-        # Flex Attention
+        
         block_mask = create_block_mask(
             mask_mod=generate_eagle3_mask(
                 seq_lengths=seq_lengths,
@@ -656,17 +725,18 @@ class LlamaFlexAttention(nn.Module):
             ),
             B=bsz,
             H=1, # Rely on broadcast
-            Q_LEN=q_len, 
+            Q_LEN=q_len,
             KV_LEN=key_cache.shape[-2],
             device=query_states.device,
             # TODO: enable compiling after fix TorchInductor's Triton code generation issue.
             # See: https://github.com/pytorch/pytorch/issues/160018
             # _compile=True,
         )
+        # attn_output = compile_friendly_flex_attention(
         attn_output = compile_friendly_flex_attention(
             query=query_states,
-            key=key_cache,
-            value=value_cache, 
+            key=key_cache.contiguous(),
+            value=value_cache.contiguous(), 
             block_mask=block_mask,
             enable_gqa=True,
         )

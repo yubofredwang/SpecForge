@@ -32,8 +32,11 @@ class DataCollatorWithPadding:
     Datacollator that will dynamically pad the inputs for batching.
     """
 
-    def __init__(self, pad_to_multiple_of: Optional[int] = None):
+    def __init__(self, pad_to_multiple_of: Optional[int] = None, start_padding_after: Optional[int] = None):
+        if start_padding_after is not None:
+            assert pad_to_multiple_of is not None, "pad_to_multiple_of must be provided if start_padding_after is provided"
         self.pad_to_multiple_of = pad_to_multiple_of
+        self.start_padding_after = start_padding_after
 
     def paddingtensor(self, intensors: torch.Tensor, N: int) -> torch.Tensor:
         """
@@ -84,8 +87,15 @@ class DataCollatorWithPadding:
                 - loss_mask: torch.Tensor of shape (B, N)
         """
         max_length = max(item["input_ids"].shape[1] for item in features)
-        if self.pad_to_multiple_of is not None:
-            max_length = (max_length + self.pad_to_multiple_of - 1) // self.pad_to_multiple_of * self.pad_to_multiple_of
+        # Do not pad if not over the threshold
+        if self.start_padding_after is not None and max_length > self.start_padding_after:
+            max_length = (
+                (max_length + self.pad_to_multiple_of - 1) // 
+                self.pad_to_multiple_of * self.pad_to_multiple_of
+            )
+        else:
+            max_length = max_length
+
         batch_input_ids = torch.cat(
             [self.paddingtensor2D(item["input_ids"], max_length) for item in features]
         )
@@ -129,6 +139,7 @@ def prepare_dp_dataloaders(
     pin_memory: Optional[bool] = False,
     shuffle: Optional[bool] = False,
     pad_to_multiple_of: Optional[int] = None,
+    start_padding_after: Optional[int] = None,
     **dataloader_kwargs
 ) -> DataLoader:
     """
@@ -157,7 +168,10 @@ def prepare_dp_dataloaders(
         sampler=sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        collate_fn=DataCollatorWithPadding(pad_to_multiple_of=pad_to_multiple_of),
+        collate_fn=DataCollatorWithPadding(
+            # pad_to_multiple_of=pad_to_multiple_of,
+            # start_padding_after=start_padding_after,
+        ),
         **dataloader_kwargs
     )
     return dataloader

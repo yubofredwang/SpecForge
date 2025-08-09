@@ -38,7 +38,6 @@ if __name__ == "__main__":
     hidden_size = config.hidden_size * 2
     # Simulate inputs
     position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1)
-    # Switch to StaticCache
     past_key_values = DynamicCache()
     attention_mask = torch.ones(batch_size, seq_len)
     # First 128 is padding

@@ -226,12 +226,20 @@ def main():
             cache_key=cache_key,
         )
 
+    if args.attention_backend == "flex_attention":
+        start_padding_after = 2048
+        pad_to_multiple_of = 1024 # Reduce the kernel compiles
+    else:
+        start_padding_after = None
+        pad_to_multiple_of = None
+
     train_dataloader = prepare_dp_dataloaders(
         train_eagle3_dataset,
         args.batch_size,
         num_workers=4,
         shuffle=True,
-        pad_to_multiple_of=128 if args.attention_backend == "flex_attention" else None,
+        # pad_to_multiple_of=pad_to_multiple_of,
+        # start_padding_after=start_padding_after,
         process_group=get_dp_group(),
     )
     print_with_rank(f"Initialized train dataloader")
@@ -255,7 +263,7 @@ def main():
             args.batch_size,
             num_workers=4,
             shuffle=False,
-            pad_to_multiple_of=128 if args.attention_backend == "flex_attention" else None,
+            # pad_to_multiple_of=512 if args.attention_backend == "flex_attention" else None,
             process_group=get_dp_group(),
         )
         print_with_rank(f"Initialized eval dataloader")

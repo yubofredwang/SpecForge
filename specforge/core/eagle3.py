@@ -146,6 +146,11 @@ class OnlineEagle3Model(Eagle3Model):
             position_ids: (batch, seq_len)
         """
         # Step 1: prepare data with the target model
+        batch_size, seq_length = input_ids.shape
+        # if seq_length > 2048:
+        #     self.attention_backend = "flex_attention"
+        
+        
         hidden_states, target, loss_mask, input_ids = self._prepare_data(
             input_ids, attention_mask, loss_mask
         )

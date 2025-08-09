@@ -4,6 +4,7 @@ ROOT_DIR=$(dirname $SCRIPT_DIR)
 # train eagle3 for llama3.1-8b
 NUM_GPUS=${1:-8}
 
+TORCHINDUCTOR_CACHE_DIR=$ROOT_DIR/cache/compiled_kernels \
 torchrun \
     --standalone \
     --nproc_per_node $NUM_GPUS \
@@ -23,4 +24,4 @@ torchrun \
     --mlflow-run-name $USER/llama3-8b-eagle3-specforge-run-$(date +%Y%m%d-%H%M%S) \
     --mlflow-tracking-uri http://mlflow.grid1.ard.grid.linkedin.com:31812 \
     --eval-data-split 0.01 \
-    --attention-backend flex_attention
+    # --attention-backend flex_attention
