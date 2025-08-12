@@ -265,7 +265,9 @@ class TestEagle3FlexMask(unittest.TestCase):
         Q_LEN = S
         KV_LEN = S * 3
         data_type = torch.bfloat16
-        query = torch.randn(B, H, S, D, device="cuda", dtype=data_type, requires_grad=True)
+        query = torch.randn(
+            B, H, S, D, device="cuda", dtype=data_type, requires_grad=True
+        )
         key_cache = torch.randn(
             B, H, KV_LEN, D, device="cuda", dtype=data_type, requires_grad=True
         )
