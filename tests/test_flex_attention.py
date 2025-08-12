@@ -248,7 +248,7 @@ class TestFlexAttention(unittest.TestCase):
                 getattr(attention, proj_name).weight.grad,
                 getattr(flex_attention, proj_name).weight.grad,
                 atol=1e-3,
-                rtol=2e-3,
+                rtol=1e-3,
             )
 
 
