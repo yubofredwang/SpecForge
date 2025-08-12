@@ -1,6 +1,7 @@
 import json
 import os
-from typing import Union
+import warnings
+from typing import Optional, Union
 
 import torch
 from transformers import AutoConfig
@@ -11,6 +12,7 @@ from transformers import (
     LlamaConfig,
     PretrainedConfig,
     Qwen3MoeConfig,
+    modeling_utils,
 )
 
 from specforge.utils import default_torch_dtype
@@ -27,7 +29,7 @@ class AutoEagle3DraftModel(AutoModelForCausalLMBase):
     }
 
     @classmethod
-    def from_config(cls, config: PretrainedConfig):
+    def from_config(cls, config: PretrainedConfig, **config_kwargs):
         """
         This class method takes a configuration object and create its model based on the
         _model_mapping class variable.
@@ -40,7 +42,32 @@ class AutoEagle3DraftModel(AutoModelForCausalLMBase):
         """
         # get the model class from the
         _model_cls = cls._model_mapping[type(config)]
-        return _model_cls(config)
+        return _model_cls(config, **config_kwargs)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: Union[str, os.PathLike[str]],
+        *model_args,
+        **kwargs,
+    ):
+        original_warn = modeling_utils.logger.warning
+
+        def filtered_warning(msg):
+            if "embed_tokens.weight" in str(msg) and "initialized" in str(msg):
+                return
+            original_warn(msg)
+
+        modeling_utils.logger.warning = filtered_warning
+
+        try:
+            model = super().from_pretrained(
+                pretrained_model_name_or_path, *model_args, **kwargs
+            )
+        finally:
+            modeling_utils.logger.warning = original_warn
+
+        return model
 
 
 class AutoDistributedTargetModel(AutoModelForCausalLMBase):
@@ -56,6 +83,7 @@ class AutoDistributedTargetModel(AutoModelForCausalLMBase):
         pretrained_model_name_or_path: Union[str, os.PathLike[str]],
         torch_dtype: torch.dtype = None,
         device: str = None,
+        cache_dir: Optional[str] = None,
         **config_kwargs,
     ):
         config = AutoConfig.from_pretrained(
@@ -81,7 +109,7 @@ class AutoDistributedTargetModel(AutoModelForCausalLMBase):
         # load model
         with default_torch_dtype(torch_dtype), torch.device(device):
             model = model_cls(config)
-        model.load_checkpoint(pretrained_model_name_or_path)
+        model.load_checkpoint(pretrained_model_name_or_path, cache_dir=cache_dir)
 
         # just ensure that all the parameters follow the same dtype and device
         # model = model.to(torch_dtype)
