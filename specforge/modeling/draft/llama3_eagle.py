@@ -485,6 +485,8 @@ class LlamaFlexAttention(LlamaAttention):
         # Shrink the attention mask to align with the padding to the right.
         # This is equivalent to the shrinking logic in eagle3.py
         seq_lengths -= lck
+        # TODO: Remove the usage of uncompiled create_block_mask after
+        # https://github.com/pytorch/pytorch/issues/160018
         if q_len > 128:
             create_block_mask_func = compile_friendly_create_block_mask
         else:
