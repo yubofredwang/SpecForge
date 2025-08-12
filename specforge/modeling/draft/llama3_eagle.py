@@ -497,8 +497,6 @@ class LlamaFlexAttention(LlamaAttention):
             Q_LEN=q_len,
             KV_LEN=key_cache.shape[-2],
             device=query_states.device,
-            # TODO: enable compiling after fix TorchInductor's Triton code generation issue.
-            # See: https://github.com/pytorch/pytorch/issues/160018
             _compile=True,
         )
 
