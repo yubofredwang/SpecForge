@@ -499,7 +499,7 @@ class LlamaFlexAttention(LlamaAttention):
             device=query_states.device,
             # TODO: enable compiling after fix TorchInductor's Triton code generation issue.
             # See: https://github.com/pytorch/pytorch/issues/160018
-            # _compile=True,
+            _compile=True,
         )
 
         attn_output = compile_friendly_flex_attention(

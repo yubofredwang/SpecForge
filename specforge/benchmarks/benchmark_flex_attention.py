@@ -22,7 +22,7 @@ config_dict = {
     "hidden_size": 4096,
     "num_attention_heads": 32,
     "num_key_value_heads": 8,
-    "max_position_embeddings": 2048,
+    "max_position_embeddings": 16384,
     "rms_norm_eps": 1e-05,
     "vocab_size": 32000,
     "hidden_act": "silu",
@@ -316,16 +316,32 @@ if __name__ == "__main__":
 
     # Define sequence lengths to test
     seq_lengths = [128 * i for i in range(1, 28, 4)]
+    # Add extra long context
+    seq_lengths.extend([16384, 32768])
 
     print(f"Testing sequence lengths: {seq_lengths}")
 
     # Run benchmarks
     print("\n" + "=" * 50)
-    eagle_results = benchmark_function("sdpa", seq_lengths)
+    # Truncate seqlen after 2560 since naive eagle goes OOM
+    eagle_seq_lengths = [seq_len for seq_len in seq_lengths if seq_len <= 2560]
+    eagle_results = benchmark_function("sdpa", eagle_seq_lengths)
     print("\n" + "=" * 50)
     flex_results = benchmark_function(
         "flex_attention", seq_lengths, enable_profile=args.enable_profile
     )
+    # Pad the memory usage on eagle to max memory 80GB when data not available
+    max_time = max(result["time"] for result in flex_results)
+    for result in flex_results:
+        if result["seq_len"] not in eagle_seq_lengths:
+            eagle_results.append(
+                {
+                    "seq_len": result["seq_len"],
+                    "time": max_time,
+                    "peak_memory": 80 * 1024**3,
+                    "memory_increase": 0,  # Not used in plotting
+                }
+            )
 
     # Plot results
     plot_results(eagle_results, flex_results, seq_lengths)
