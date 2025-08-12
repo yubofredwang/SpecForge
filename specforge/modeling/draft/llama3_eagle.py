@@ -12,6 +12,7 @@ from transformers.cache_utils import Cache
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 from specforge.modeling.draft.flex_attention import (
+    compile_friendly_create_block_mask,
     compile_friendly_flex_attention,
     generate_eagle3_mask,
 )
@@ -484,8 +485,12 @@ class LlamaFlexAttention(LlamaAttention):
         # Shrink the attention mask to align with the padding to the right.
         # This is equivalent to the shrinking logic in eagle3.py
         seq_lengths -= lck
+        if q_len > 128:
+            create_block_mask_func = compile_friendly_create_block_mask
+        else:
+            create_block_mask_func = create_block_mask
 
-        block_mask = create_block_mask(
+        block_mask = create_block_mask_func(
             mask_mod=generate_eagle3_mask(
                 seq_lengths=seq_lengths,
                 Q_LEN=q_len,
@@ -497,7 +502,6 @@ class LlamaFlexAttention(LlamaAttention):
             Q_LEN=q_len,
             KV_LEN=key_cache.shape[-2],
             device=query_states.device,
-            _compile=True,
         )
 
         attn_output = compile_friendly_flex_attention(

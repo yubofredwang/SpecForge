@@ -80,7 +80,7 @@ def parse_args():
         default=20,
         help="Timeout for collective communication in minutes",
     )
-    parser.add_argument("--attention-backend", type=str, default="sdpa")
+    parser.add_argument("--attention-backend", type=str, default="flex_attention")
 
     # resume
     parser.add_argument("--resume", action="store_true")

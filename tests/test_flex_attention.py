@@ -7,6 +7,12 @@ import torch.nn as nn
 from transformers import LlamaConfig
 from transformers.cache_utils import DynamicCache
 
+from specforge.modeling.draft.flex_attention import (
+    compile_friendly_create_block_mask,
+    compile_friendly_flex_attention,
+    create_block_mask,
+    generate_eagle3_mask,
+)
 from specforge.modeling.draft.llama3_eagle import (
     LlamaAttention,
     LlamaFlexAttention,
@@ -38,10 +44,7 @@ class TestFlexAttention(unittest.TestCase):
         }
         self.config = LlamaConfig(**self.config_dict)
 
-        # Define sequence lengths to test (multiples of 128)
-        # TODO: Expand this to longer
-        # max_length = 128 * 20
-        self.seq_lengths = [4096]
+        self.seq_lengths = [128, 256, 300, 512, 800, 1024, 2048]
         self.dtype = torch.float32
 
     def test_forward_pass_comparison(self):
@@ -252,6 +255,52 @@ class TestFlexAttention(unittest.TestCase):
             )
 
 
+class TestEagle3FlexMask(unittest.TestCase):
+
+    def test_eagle3_flex_mask(self):
+        B = 1
+        H = 1
+        S = 128 * 8
+        D = 128
+        Q_LEN = S
+        KV_LEN = S * 3
+        data_type = torch.bfloat16
+        query = torch.randn(B, H, S, D, device="cuda", dtype=data_type, requires_grad=True)
+        key_cache = torch.randn(
+            B, H, KV_LEN, D, device="cuda", dtype=data_type, requires_grad=True
+        )
+        value_cache = torch.randn(
+            B, H, KV_LEN, D, device="cuda", dtype=data_type, requires_grad=True
+        )
+        seq_lengths = torch.tensor([S], device="cuda", dtype=torch.int32)
+        block_mask = compile_friendly_create_block_mask(
+            mask_mod=generate_eagle3_mask(
+                seq_lengths=seq_lengths, Q_LEN=Q_LEN, KV_LEN=KV_LEN, shift_left=128 * 2
+            ),
+            B=1,
+            H=1,
+            Q_LEN=Q_LEN,
+            KV_LEN=KV_LEN,
+            device=query.device,
+        )
+        # fmt: off
+        expected_mask = torch.tensor([[[
+            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+            [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+            [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+        ]]], dtype=torch.int32).to(query.device)
+        # fmt: on
+        dense_mask = block_mask.to_dense()
+        assert torch.allclose(dense_mask, expected_mask)
+        output = compile_friendly_flex_attention(
+            query, key_cache, value_cache, block_mask=block_mask
+        )
+
+
 if __name__ == "__main__":
-    # Run test_flex_attention_basic only
     unittest.main(verbosity=2)
