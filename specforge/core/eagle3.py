@@ -24,6 +24,7 @@ from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers.cache_utils import DynamicCache
 
@@ -151,10 +152,19 @@ class OnlineEagle3Model(Eagle3Model):
             past_key_values: We dont use this past_key_values in eagle3, but keep it for compatibility. We control kvcache by cache_hidden.
             position_ids: (batch, seq_len)
         """
-        # Step 1: prepare data with the target model
+        # Step 0: prepare data with the target model
         hidden_states, target, loss_mask, input_ids = self._prepare_data(
             input_ids, attention_mask, loss_mask
         )
+
+        # Step 1: handle vocab size
+        target_p_padded, position_mask = _compute_target_p_padded(
+            target=target,
+            t2d=self.draft_model.t2d,
+            loss_mask=loss_mask,
+            length=self.length,
+        )
+        del target
 
         # basic info
         batch_size, seq_length, _ = hidden_states.shape
@@ -208,6 +218,7 @@ class OnlineEagle3Model(Eagle3Model):
             past_key_values = DynamicCache()
 
         for idx in range(self.length):
+            target_p = target_p_padded[:, idx : idx + seq_length, :]
             is_last = idx == self.length - 1
 
             # Step 5.1: embed the input ids
@@ -224,14 +235,6 @@ class OnlineEagle3Model(Eagle3Model):
                 past_key_values=past_key_values,
                 use_cache=True,
             )
-
-            # Step 5.3: handle vocab size
-            with torch.no_grad():
-                target_p, position_mask = _compute_target_p(
-                    target=target,
-                    t2d=self.draft_model.t2d,
-                    loss_mask=loss_mask,
-                )
 
             # update hidden states for next step
             hidden_states = hidden_states_out
@@ -259,7 +262,7 @@ class OnlineEagle3Model(Eagle3Model):
             if not is_last:
                 # Step 5.7: we need to update the loss mask
                 input_ids = padding(input_ids, left=False)
-                target = padding(target, left=False)
+                position_mask = padding(position_mask, left=False)
                 loss_mask = padding(loss_mask, left=False)
                 if self.attention_backend == "sdpa":
                     ind = torch.arange(seq_length, device=attention_mask.device)
@@ -326,6 +329,15 @@ class OfflineEagle3Model(Eagle3Model):
         seq_length_with_past = seq_length
         past_key_values_length = 0
 
+        # Step 0: handle vocab size
+        target_p_padded, position_mask = _compute_target_p_padded(
+            target=target,
+            t2d=self.draft_model.t2d,
+            loss_mask=loss_mask,
+            length=self.length,
+        )
+        del target
+
         # Step 1: project the concatenated hidden states to the target hidden size
         hidden_states = self.draft_model.project_hidden_states(hidden_states)
 
@@ -373,6 +385,7 @@ class OfflineEagle3Model(Eagle3Model):
             past_key_values = DynamicCache()
 
         for idx in range(self.length):
+            target_p = target_p_padded[:, idx : idx + seq_length, :]
             is_last = idx == self.length - 1
 
             # Step 5.1: embed the input ids
@@ -389,14 +402,6 @@ class OfflineEagle3Model(Eagle3Model):
                 past_key_values=past_key_values,
                 use_cache=True,
             )
-
-            # Step 5.3: handle vocab size
-            with torch.no_grad():
-                target_p, position_mask = _compute_target_p(
-                    target=target,
-                    t2d=self.draft_model.t2d,
-                    loss_mask=loss_mask,
-                )
 
             # update hidden states for next step
             hidden_states = hidden_states_out
@@ -424,7 +429,7 @@ class OfflineEagle3Model(Eagle3Model):
             if not is_last:
                 # Step 5.7: we need to update the loss mask
                 input_ids = padding(input_ids, left=False)
-                target = padding(target, left=False)
+                position_mask = padding(position_mask, left=False)
                 loss_mask = padding(loss_mask, left=False)
                 if self.attention_backend == "sdpa":
                     ind = torch.arange(seq_length, device=attention_mask.device)
@@ -435,6 +440,26 @@ class OfflineEagle3Model(Eagle3Model):
                     ).min
                 # Flex attention mask shirnking is handled inside attention module
         return plosses, vlosses, acces
+
+
+def _compute_target_p_padded(target, t2d, loss_mask, length):
+    with torch.no_grad():
+        target_p, position_mask = _compute_target_p(
+            target=target,
+            t2d=t2d,
+            loss_mask=loss_mask,
+        )
+
+        assert len(target_p.shape) == 3
+        target_p_padded = F.pad(
+            target_p,
+            pad=(0, 0, 0, length),
+            mode="constant",
+            # For bitwise equality with previous code
+            value=1 / target_p.shape[-1],
+        )
+
+        return target_p_padded, position_mask
 
 
 @torch.compile(dynamic=None)
