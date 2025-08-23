@@ -55,6 +55,9 @@ def parse_args():
     parser.add_argument("--max-length", type=int, default=2048)
     parser.add_argument("--warmup-ratio", type=float, default=0.02)
     parser.add_argument(
+        "--log-steps", type=int, default=50, help="Log training metrics every N steps"
+    )
+    parser.add_argument(
         "--ttt-length",
         type=int,
         default=7,
@@ -89,7 +92,7 @@ def parse_args():
         "--report-to",
         type=str,
         default="none",
-        choices=["wandb", "tensorboard", "swanlab", "none"],
+        choices=["wandb", "tensorboard", "swanlab", "mlflow", "none"],
         help="The integration to report results and logs to.",
     )
     # wandb-specific args
@@ -114,6 +117,25 @@ def parse_args():
         type=str,
         default=None,
         help="The API key for swanlab non-interactive login.",
+    )
+    # mlflow-specific args
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        type=str,
+        default=None,
+        help="The MLflow tracking URI. If not set, uses MLFLOW_TRACKING_URI environment variable or defaults to local './mlruns'.",
+    )
+    parser.add_argument(
+        "--mlflow-experiment-name",
+        type=str,
+        default=None,
+        help="The MLflow experiment name. If not set, uses MLFLOW_EXPERIMENT_NAME environment variable.",
+    )
+    parser.add_argument(
+        "--mlflow-run-name",
+        type=str,
+        default=None,
+        help="The MLflow run name. If not set, MLflow will auto-generate one.",
     )
 
     # vlm related args
@@ -419,12 +441,14 @@ def main():
 
             global_step += 1
 
-            logdict = {"train/lr": optimizer.param_groups[0]["lr"]}
-            for i in range(len(plosses)):
-                logdict[f"train/ploss_{i}"] = plosses[i].item()
-            for i in range(len(acces)):
-                logdict[f"train/acc_{i}"] = acces[i]
-            tracker.log(logdict, step=global_step)
+            # Log only every log_steps steps
+            if global_step % args.log_steps == 0:
+                logdict = {"train/lr": optimizer.param_groups[0]["lr"]}
+                for i in range(len(plosses)):
+                    logdict[f"train/ploss_{i}"] = plosses[i].item()
+                for i in range(len(acces)):
+                    logdict[f"train/acc_{i}"] = acces[i]
+                tracker.log(logdict, step=global_step)
 
             epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
             epoch_plosses = [
