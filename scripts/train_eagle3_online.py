@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import os
 import time
+from collections import defaultdict
 
 import torch
 import torch.distributed as dist
@@ -25,9 +26,14 @@ from specforge.data import (
     prepare_dp_dataloaders,
 )
 from specforge.distributed import destroy_distributed, get_dp_group, init_distributed
-from specforge.lr_scheduler import CosineAnnealingWarmupLR
+from specforge.optimizer import BF16Optimizer
 from specforge.tracker import create_tracker, get_tracker_class
-from specforge.utils import get_last_checkpoint, print_with_rank, rank_0_priority
+from specforge.utils import (
+    get_last_checkpoint,
+    print_on_rank0,
+    print_with_rank,
+    rank_0_priority,
+)
 
 
 def parse_args():
@@ -53,7 +59,9 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--max-length", type=int, default=2048)
-    parser.add_argument("--warmup-ratio", type=float, default=0.02)
+    parser.add_argument("--warmup-ratio", type=float, default=0.015)
+    parser.add_argument("--total-steps", type=int, default=800000)
+    parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument(
         "--log-steps", type=int, default=50, help="Log training metrics every N steps"
     )
@@ -156,11 +164,6 @@ def parse_args():
     args = parser.parse_args()
 
     return parser, args
-
-
-def print_on_rank0(message):
-    if dist.get_rank() == 0:
-        print(message)
 
 
 def main():
@@ -345,11 +348,12 @@ def main():
     print_with_rank("Initialized Eagle3 FSDP model")
 
     # build other components
-    optimizer = torch.optim.AdamW(eagle3_model.parameters(), lr=args.learning_rate)
-    total_steps = args.num_epochs * len(train_dataloader)
-    warmup_steps = int(total_steps * args.warmup_ratio)
-    scheduler = CosineAnnealingWarmupLR(
-        optimizer, total_steps=total_steps, warmup_steps=warmup_steps
+    optimizer = BF16Optimizer(
+        eagle3_model,
+        lr=args.learning_rate,
+        max_grad_norm=args.max_grad_norm,
+        warmup_ratio=args.warmup_ratio,
+        total_steps=args.total_steps,
     )
     print_with_rank("Initialized optimizer and scheduler")
 
@@ -364,13 +368,7 @@ def main():
 
         if os.path.exists(state_path):
             state = torch.load(state_path, map_location="cpu", weights_only=False)
-
-            optimizer.load_state_dict(state["optimizer_state_dict"])
-            print_on_rank0("Successfully loaded optimizer state_dict.")
-
-            scheduler.load_state_dict(state["scheduler_state_dict"])
-            print_on_rank0("Successfully loaded scheduler state_dict.")
-
+            optimizer.load_state_dict(state)
             start_epoch = state["epoch"] + 1
             global_step = state.get("global_step", 0)
             print_on_rank0(f"Resuming from epoch {start_epoch}")
@@ -385,6 +383,7 @@ def main():
 
     # start running
     print_on_rank0(f"Starting training from epoch {start_epoch}")
+    batch_index, log_dict = 0, defaultdict(float)
     for epoch in range(start_epoch, args.num_epochs):
         # Run training
         train_dataloader.sampler.set_epoch(epoch + 1)
@@ -392,10 +391,9 @@ def main():
         epoch_acces = [[] for _ in range(eagle3_model.module.length)]
         epoch_plosses = [[] for _ in range(eagle3_model.module.length)]
 
-        for batch_index, data in enumerate(
-            tqdm(train_dataloader, desc=f"Training Epoch {epoch}")
-        ):
-            if args.profile and epoch == 0:
+        for data in tqdm(train_dataloader, desc=f"Training Epoch {epoch}"):
+            batch_index += 1
+            if args.profile:
                 if batch_index == args.profile_start_step:
                     print("Start profile")
                     torch_profiler = torch.profiler.profile(
@@ -416,7 +414,6 @@ def main():
                     torch_profiler.stop()
                     torch_profiler.export_chrome_trace(output_path)
 
-            optimizer.zero_grad()
             if args.is_vlm:
                 plosses, _, acces = eagle3_model(
                     input_ids=data["input_ids"].cuda(),
@@ -434,21 +431,24 @@ def main():
 
             # calculate weighted loss
             ploss_weight = [0.8**i for i in range(len(plosses))]
-            ploss = sum([ploss_weight[i] * plosses[i] for i in range(len(plosses))])
+            ploss = (
+                sum([ploss_weight[i] * plosses[i] for i in range(len(plosses))])
+                / args.draft_accumulation_steps
+            )
             ploss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            global_step += 1
-
-            # Log only every log_steps steps
-            if global_step % args.log_steps == 0:
-                logdict = {"train/lr": optimizer.param_groups[0]["lr"]}
-                for i in range(len(plosses)):
-                    logdict[f"train/ploss_{i}"] = plosses[i].item()
-                for i in range(len(acces)):
-                    logdict[f"train/acc_{i}"] = acces[i]
-                tracker.log(logdict, step=global_step)
+            log_dict["train/lr"] = optimizer.get_learning_rate()
+            for i in range(len(plosses)):
+                log_dict[f"train/ploss_{i}"] += (
+                    plosses[i].item() / args.draft_accumulation_steps
+                )
+            for i in range(len(acces)):
+                log_dict[f"train/acc_{i}"] += acces[i] / args.draft_accumulation_steps
+            if batch_index % args.draft_accumulation_steps == 0:
+                optimizer.step()
+                global_step += 1
+                if global_step % args.log_steps == 0:
+                    tracker.log(log_dict, step=global_step)
+                log_dict = defaultdict(float)
 
             epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
             epoch_plosses = [
@@ -541,12 +541,11 @@ def main():
             with FSDP.state_dict_type(eagle3_model, StateDictType.FULL_STATE_DICT):
                 model_state_dict = eagle3_model.state_dict()
                 state_to_save = {
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
                     "epoch": epoch,
                     "global_step": global_step,
                     "args": args,
                 }
+                state_to_save.update(optimizer.state_dict())
                 draft_model_state_dict = {
                     k.replace("draft_model.", ""): v
                     for k, v in model_state_dict.items()
