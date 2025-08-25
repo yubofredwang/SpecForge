@@ -12,8 +12,7 @@ concurrency:
 jobs:
   unit-test:
     if: (github.repository == 'sgl-project/SpecForge' || github.event_name == 'pull_request') &&
-        github.event.pull_request.draft == false &&
-        needs.check-changes.outputs.src == 'true'
+        github.event.pull_request.draft == false
     runs-on: specforge-ci
     container:
       image: lmsysorg/sglang:dev
