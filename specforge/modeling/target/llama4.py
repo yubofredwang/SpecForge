@@ -44,8 +44,8 @@ from transformers.models.llama4.modeling_llama4 import (
     eager_attention_forward,
 )
 from transformers.processing_utils import Unpack
-from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils import auto_docstring, can_return_tuple, logging
+from transformers.utils.deprecation import deprecate_kwarg
 
 # [MODIFIED] Import from transformers library
 from specforge.distributed import get_tp_group
@@ -211,9 +211,15 @@ class Llama4TextAttention(nn.Module):
         # Use temperature tuning from https://huggingface.co/papers/2501.19399) to NoROPE layers
         if self.attn_temperature_tuning and not self.use_rope:
             attn_scales = (
-                torch.log(torch.floor((cache_position.float() + 1.0) / self.floor_scale) + 1.0) * self.attn_scale + 1.0
+                torch.log(
+                    torch.floor((cache_position.float() + 1.0) / self.floor_scale) + 1.0
+                )
+                * self.attn_scale
+                + 1.0
             )
-            attn_scales = attn_scales.view((1, input_shape[-1], 1, 1)).expand((*input_shape, 1, 1))  # batch size > 1
+            attn_scales = attn_scales.view((1, input_shape[-1], 1, 1)).expand(
+                (*input_shape, 1, 1)
+            )  # batch size > 1
             query_states = (query_states * attn_scales).to(query_states.dtype)
 
         query_states = query_states.transpose(1, 2)
@@ -222,11 +228,15 @@ class Llama4TextAttention(nn.Module):
         if past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"cache_position": cache_position}
-            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            key_states, value_states = past_key_values.update(
+                key_states, value_states, self.layer_idx, cache_kwargs
+            )
 
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+            attention_interface = ALL_ATTENTION_FUNCTIONS[
+                self.config._attn_implementation
+            ]
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
@@ -243,6 +253,7 @@ class Llama4TextAttention(nn.Module):
         dist.all_reduce(attn_output, op=dist.ReduceOp.SUM, group=self.tp_group)
         return attn_output, attn_weights
 
+
 class Llama4Router(nn.Linear):
     def __init__(self, config):
         super().__init__(config.hidden_size, config.num_local_experts, bias=False)
@@ -252,8 +263,12 @@ class Llama4Router(nn.Linear):
     def forward(self, hidden_states):
         router_logits = super().forward(hidden_states)
         router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=1)
-        router_scores = torch.full_like(router_logits, float("-inf")).scatter_(1, router_indices, router_top_value)
-        router_scores = torch.nn.functional.sigmoid(router_scores.float()).to(router_scores.dtype)
+        router_scores = torch.full_like(router_logits, float("-inf")).scatter_(
+            1, router_indices, router_top_value
+        )
+        router_scores = torch.nn.functional.sigmoid(router_scores.float()).to(
+            router_scores.dtype
+        )
         return router_scores, router_logits
 
 
@@ -275,7 +290,11 @@ class Llama4TextMoe(nn.Module):
         routed_in = routed_in * router_scores.reshape(-1, 1)
         routed_out = self.experts(routed_in)
         out = self.shared_expert(hidden_states)
-        out.add_(routed_out.reshape(router_scores.shape[1], -1, routed_out.shape[-1]).sum(dim=0))
+        out.add_(
+            routed_out.reshape(router_scores.shape[1], -1, routed_out.shape[-1]).sum(
+                dim=0
+            )
+        )
         return out, router_logits
 
 
