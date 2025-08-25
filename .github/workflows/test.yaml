@@ -1,0 +1,31 @@
+name: PR Test
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-test:
+    if: (github.repository == 'sgl-project/SpecForge' || github.event_name == 'pull_request') &&
+        github.event.pull_request.draft == false &&
+        needs.check-changes.outputs.src == 'true'
+    runs-on: specforge-ci
+    container:
+      image: lmsysorg/sglang:dev
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          uv pip install -e .
+
+      - name: Run test
+        timeout-minutes: 10
+        run: |
+          python -m unittest discover ./tests
