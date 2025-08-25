@@ -22,7 +22,6 @@ from specforge.utils import padding
 
 dynamo.config.recompile_limit = 64
 TTT_LENGTH = 7
-torch.manual_seed(0)
 
 
 class TestFlexAttention(unittest.TestCase):
@@ -30,15 +29,16 @@ class TestFlexAttention(unittest.TestCase):
 
     def setUp(self):
         """Set up test configurations and common parameters."""
+        torch.manual_seed(0)
         # Basic configuration
         self.config_dict = {
-            "hidden_size": 512,
+            "hidden_size": 128,
             "num_attention_heads": 8,
             "num_key_value_heads": 2,
-            "max_position_embeddings": 2048,
+            "max_position_embeddings": 4096,
             "rms_norm_eps": 1e-05,
-            "vocab_size": 32000,
-            "intermediate_size": 1376,
+            "vocab_size": 3200,
+            "intermediate_size": 688,
             "hidden_act": "silu",
             "num_hidden_layers": 1,
             "torch_dtype": "float32",
