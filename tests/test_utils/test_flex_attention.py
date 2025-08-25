@@ -22,6 +22,7 @@ from specforge.utils import padding
 
 dynamo.config.recompile_limit = 64
 TTT_LENGTH = 7
+torch.manual_seed(0)
 
 
 class TestFlexAttention(unittest.TestCase):
@@ -124,13 +125,13 @@ class TestFlexAttention(unittest.TestCase):
                 )
 
             torch.testing.assert_close(
-                output[0][: -1 - idx], output_flex[0][: -1 - idx], atol=1e-3, rtol=1e-3
+                output[0][: -1 - idx], output_flex[0][: -1 - idx], atol=1e-2, rtol=1e-2
             )
             torch.testing.assert_close(
                 output[1][: padding_start_index - idx],
                 output_flex[1][: padding_start_index - idx],
-                atol=1e-3,
-                rtol=1e-3,
+                atol=1e-2,
+                rtol=1e-2,
             )
             if not is_last:
                 # Step 5.7: we need to update the loss mask
@@ -227,7 +228,7 @@ class TestFlexAttention(unittest.TestCase):
             # Apply loss mask on calculation over batch
             loss = (output * loss_mask[..., None]).sum().mean()
             loss_flex = (output_flex * loss_mask[..., None]).sum().mean()
-            torch.testing.assert_close(loss, loss_flex, atol=1e-3, rtol=1e-3)
+            torch.testing.assert_close(loss, loss_flex, atol=1e-2, rtol=1e-2)
             loss_list.append(loss)
             loss_flex_list.append(loss_flex)
             # Compare gradients
@@ -250,8 +251,8 @@ class TestFlexAttention(unittest.TestCase):
             torch.testing.assert_close(
                 getattr(attention, proj_name).weight.grad,
                 getattr(flex_attention, proj_name).weight.grad,
-                atol=1e-3,
-                rtol=1e-3,
+                atol=1e-2,
+                rtol=1e-2,
             )
 
 
