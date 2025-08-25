@@ -44,6 +44,7 @@ from transformers.models.llama4.modeling_llama4 import (
     eager_attention_forward,
 )
 from transformers.processing_utils import Unpack
+from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils import auto_docstring, can_return_tuple, logging
 
 # [MODIFIED] Import from transformers library
@@ -181,12 +182,13 @@ class Llama4TextAttention(nn.Module):
         if self.config.use_qk_norm and self.use_rope:
             self.qk_norm = Llama4TextL2Norm(config.rms_norm_eps)
 
+    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor],
-        past_key_value: Optional[Cache] = None,
+        past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
@@ -209,32 +211,22 @@ class Llama4TextAttention(nn.Module):
         # Use temperature tuning from https://huggingface.co/papers/2501.19399) to NoROPE layers
         if self.attn_temperature_tuning and not self.use_rope:
             attn_scales = (
-                torch.log(
-                    torch.floor((cache_position.float() + 1.0) / self.floor_scale) + 1.0
-                )
-                * self.attn_scale
-                + 1.0
+                torch.log(torch.floor((cache_position.float() + 1.0) / self.floor_scale) + 1.0) * self.attn_scale + 1.0
             )
-            attn_scales = attn_scales.view((1, input_shape[-1], 1, 1)).expand(
-                (*input_shape, 1, 1)
-            )  # batch size > 1
+            attn_scales = attn_scales.view((1, input_shape[-1], 1, 1)).expand((*input_shape, 1, 1))  # batch size > 1
             query_states = (query_states * attn_scales).to(query_states.dtype)
 
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
 
-        if past_key_value is not None:
+        if past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"cache_position": cache_position}
-            key_states, value_states = past_key_value.update(
-                key_states, value_states, self.layer_idx, cache_kwargs
-            )
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[
-                self.config._attn_implementation
-            ]
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
@@ -251,6 +243,19 @@ class Llama4TextAttention(nn.Module):
         dist.all_reduce(attn_output, op=dist.ReduceOp.SUM, group=self.tp_group)
         return attn_output, attn_weights
 
+class Llama4Router(nn.Linear):
+    def __init__(self, config):
+        super().__init__(config.hidden_size, config.num_local_experts, bias=False)
+        self.num_experts = config.num_local_experts
+        self.top_k = config.num_experts_per_tok
+
+    def forward(self, hidden_states):
+        router_logits = super().forward(hidden_states)
+        router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=1)
+        router_scores = torch.full_like(router_logits, float("-inf")).scatter_(1, router_indices, router_top_value)
+        router_scores = torch.nn.functional.sigmoid(router_scores.float()).to(router_scores.dtype)
+        return router_scores, router_logits
+
 
 @use_kernel_forward_from_hub("Llama4TextMoe")
 class Llama4TextMoe(nn.Module):
@@ -260,32 +265,18 @@ class Llama4TextMoe(nn.Module):
         self.hidden_dim = config.hidden_size
         self.num_experts = config.num_local_experts
         self.experts = Llama4TextExperts(config)
-        self.router = nn.Linear(
-            config.hidden_size, config.num_local_experts, bias=False
-        )
+        self.router = Llama4Router(config)
         self.shared_expert = Llama4TextMLP(config)
 
     def forward(self, hidden_states):
         hidden_states = hidden_states.reshape(-1, self.hidden_dim)
-        router_logits = self.router(hidden_states)
-
-        router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=1)
-
-        router_scores = (
-            torch.full_like(router_logits, float("-inf"))
-            .scatter_(1, router_indices, router_top_value)
-            .transpose(0, 1)
-        )
-        router_scores = torch.sigmoid(router_scores.float()).to(hidden_states.dtype)
-
-        routed_in = hidden_states.repeat(self.num_experts, 1)
+        router_scores, router_logits = self.router(hidden_states)
+        routed_in = hidden_states.repeat(router_scores.shape[1], 1)
         routed_in = routed_in * router_scores.reshape(-1, 1)
         routed_out = self.experts(routed_in)
-
         out = self.shared_expert(hidden_states)
-        out.add_(routed_out.reshape(self.num_experts, -1, self.hidden_dim).sum(dim=0))
-
-        return out, router_scores
+        out.add_(routed_out.reshape(router_scores.shape[1], -1, routed_out.shape[-1]).sum(dim=0))
+        return out, router_logits
 
 
 class Llama4TextDecoderLayer(GradientCheckpointingLayer):
