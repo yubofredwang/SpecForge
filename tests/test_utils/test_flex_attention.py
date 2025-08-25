@@ -273,11 +273,8 @@ class TestEagle3FlexMask(unittest.TestCase):
         KV_LEN = S * 3
         data_type = torch.bfloat16
         query = norm_tensor((B, H, S, D), device="cuda", dtype=data_type)
-        query.requires_grad_(True)
         key_cache = norm_tensor((B, H, KV_LEN, D), device="cuda", dtype=data_type)
-        key_cache.requires_grad_(True)
         value_cache = norm_tensor((B, H, KV_LEN, D), device="cuda", dtype=data_type)
-        value_cache.requires_grad_(True)
         seq_lengths = torch.tensor([S], device="cuda", dtype=torch.int32)
         block_mask = compile_friendly_create_block_mask(
             mask_mod=generate_eagle3_mask(
