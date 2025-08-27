@@ -73,10 +73,8 @@ def log_softmax_forward_kernel(
         logits_block = tl.load(
             logits_ptr + offsets, mask=mask, other=float("-inf")
         ).cast(tl.float32)
-        # Find block maximum, but only from valid elements
         block_max = tl.max(tl.where(mask, logits_block, float("-inf")))
         m_new = tl.maximum(m, block_max)
-        # Update denominator with proper numerical stability
         d = d * tl.exp(m - m_new) + tl.sum(
             tl.where(mask, tl.exp(logits_block - m_new), 0.0)
         )
@@ -194,8 +192,6 @@ class LogSoftmaxLoss(torch.autograd.Function):
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
         )
-
-        # Save for backward
         ctx.save_for_backward(logits.detach(), target, position_mask, m, d)
         return loss.squeeze(1).mean()
 
@@ -203,8 +199,7 @@ class LogSoftmaxLoss(torch.autograd.Function):
     def backward(ctx, grad_output):
         logits, target, position_mask, m, d = ctx.saved_tensors
         B, T, V = logits.shape
-        # The reference uses .mean() which divides by B*T, not by number of valid positions
-        scaling_factor = 1.0 / (B * T)  # Match reference implementation exactly
+        scaling_factor = 1.0 / (B * T)
         logits = logits.view(B * T, V).contiguous()
         target = target.view(B * T, V).contiguous()
         position_mask = position_mask.view(B * T, 1).contiguous().bool()
