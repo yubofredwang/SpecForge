@@ -25,6 +25,7 @@ from specforge.modeling.target.target_head import TargetHead
 from specforge.optimizer import BF16Optimizer
 from specforge.tracker import create_tracker, get_tracker_class
 from specforge.utils import (
+    create_draft_config_from_target,
     get_last_checkpoint,
     print_on_rank0,
     print_with_rank,
@@ -37,7 +38,12 @@ def parse_args():
 
     # add model-related arguments
     parser.add_argument("--target-model-path", type=str, required=True)
-    parser.add_argument("--draft-model-config", type=str, required=True)
+    parser.add_argument(
+        "--draft-model-config",
+        type=str,
+        required=False,
+        help="Draft model config path. If not provided, will auto-generate from target model.",
+    )
     parser.add_argument(
         "--embedding-key",
         type=str,
@@ -213,7 +219,17 @@ def main():
     target_head = target_head.eval().cuda().to(torch.bfloat16)
     print_with_rank("Initialized target head")
 
-    draft_model_config = AutoDraftModelConfig.from_file(args.draft_model_config)
+    # Handle draft model config
+    if args.draft_model_config is None:
+        # Auto-generate and save config file
+        auto_config_path = create_draft_config_from_target(
+            target_model_path=args.target_model_path, cache_dir=args.cache_dir
+        )
+        draft_model_config = AutoDraftModelConfig.from_file(auto_config_path)
+    else:
+        # Use provided config file
+        draft_model_config = AutoDraftModelConfig.from_file(args.draft_model_config)
+
     if draft_model_last_checkpoint:
         draft_model = (
             AutoEagle3DraftModel.from_pretrained(
