@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument("--eval-data-path", type=str, default=None)
     parser.add_argument("--eval-hidden-states-path", type=str, default=None)
     parser.add_argument("--num-epochs", type=int, default=10)
-    parser.add_argument("--draft-global-batch-size", type=int, default=16)
+    parser.add_argument("--draft-global-batch-size", type=int, default=2)
     parser.add_argument("--draft-micro-batch-size", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--max-length", type=int, default=2048)
@@ -174,7 +174,7 @@ def main():
     set_seed(args.seed)
     init_distributed(timeout=args.dist_timeout, tp_size=args.tp_size)
     print_with_rank("Initialized distributed environment")
-    args.dp_size = dist.get_world_size()
+    args.dp_size = dist.get_world_size() // args.tp_size
     args.draft_accumulation_steps = (
         args.draft_global_batch_size // args.dp_size // args.draft_micro_batch_size
     )
