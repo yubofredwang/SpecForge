@@ -1,34 +1,44 @@
+"""
+GSM8K benchmark evaluation script.
+"""
+
 import argparse
 import ast
 import re
-import time
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-from sglang import set_default_backend
-from sglang.test.test_utils import (
-    add_common_sglang_args_and_parse,
-    select_sglang_backend,
-)
+from sglang.test.test_utils import add_common_sglang_args_and_parse
 from sglang.utils import download_and_cache_file, read_jsonl
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from benchmarks.base_benchmark import BaseBenchmark
+from benchmarks.utils import create_few_shot_sgl_function
 
 INVALID = -9999999
 
 
-def get_one_example(lines, i, include_answer):
+def get_one_example(lines: List[Dict], i: int, include_answer: bool) -> str:
+    """Format a single example."""
     ret = "Question: " + lines[i]["question"] + "\nAnswer:"
     if include_answer:
         ret += " " + lines[i]["answer"]
     return ret
 
 
-def get_few_shot_examples(lines, k):
+def get_few_shot_examples(lines: List[Dict], k: int) -> str:
+    """Get few-shot examples as a string."""
     ret = ""
     for i in range(k):
         ret += get_one_example(lines, i, True) + "\n\n"
     return ret
 
 
-def get_answer_value(answer_str):
+def get_answer_value(answer_str: str) -> int:
+    """Extract numeric answer from model output."""
     answer_str = answer_str.replace(",", "")
     numbers = re.findall(r"\d+", answer_str)
     if len(numbers) < 1:
@@ -39,91 +49,62 @@ def get_answer_value(answer_str):
         return INVALID
 
 
+class GSM8KBenchmark(BaseBenchmark):
+    """GSM8K benchmark implementation."""
+
+    def load_data(self) -> Tuple[List[Dict[str, Any]], List[int]]:
+        """Load and preprocess GSM8K dataset."""
+        # Read data
+        url = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
+        data_path = download_and_cache_file(url)
+        lines = list(read_jsonl(data_path))
+
+        # Construct prompts
+        num_questions = self.args.num_questions
+        num_shots = self.args.num_shots
+        few_shot_examples = get_few_shot_examples(lines, num_shots)
+
+        questions = []
+        labels = []
+        for i in range(min(len(lines), num_questions)):
+            question_text = get_one_example(lines, i, False)
+            questions.append({"question": question_text})
+            labels.append(get_answer_value(lines[i]["answer"]))
+
+        # Store few_shot_examples for use in create_sgl_function
+        self.few_shot_examples = few_shot_examples
+
+        assert all(l != INVALID for l in labels), "Some labels are invalid"
+        return questions, labels
+
+    def extract_answer(self, output: str, label: Optional[Any] = None) -> Optional[int]:
+        """Extract numeric answer from model output."""
+        return get_answer_value(output)
+
+    def compute_accuracy(
+        self, predictions: List[Any], labels: List[Any]
+    ) -> Optional[float]:
+        """Compute accuracy for GSM8K by comparing numeric answers."""
+        if not labels or len(labels) == 0:
+            return None
+        correct = sum(1 for pred, label in zip(predictions, labels) if pred == label)
+        return correct / len(labels) if len(labels) > 0 else 0.0
+
+    def create_sgl_function(self):
+        """Create SGL function for GSM8K with few-shot examples."""
+        return create_few_shot_sgl_function(
+            few_shot_examples=self.few_shot_examples,
+            function_name="few_shot_gsm8k",
+            answer_key="answer",
+            max_tokens=self.get_max_new_tokens(),
+            stop=["Question", "Assistant:", "<|separator|>"],
+        )
+
+
 def main(args):
-    # Select backend
-    set_default_backend(select_sglang_backend(args))
-
-    # Read data
-    data_path = "gsm8k.jsonl"
-    url = "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
-    data_path = download_and_cache_file(url)
-    lines = list(read_jsonl(data_path))
-
-    # Construct prompts
-    num_questions = args.num_questions
-    num_shots = args.num_shots
-    few_shot_examples = get_few_shot_examples(lines, num_shots)
-
-    questions = []
-    labels = []
-    for i in range(len(lines[:num_questions])):
-        questions.append(get_one_example(lines, i, False))
-        labels.append(get_answer_value(lines[i]["answer"]))
-    assert all(l != INVALID for l in labels)
-    arguments = [{"question": q} for q in questions]
-
-    #####################################
-    ######### SGL Program Begin #########
-    #####################################
-
-    import sglang as sgl
-
-    @sgl.function
-    def few_shot_gsm8k(s, question):
-        s += few_shot_examples + question
-        s += sgl.gen(
-            "answer", max_tokens=512, stop=["Question", "Assistant:", "<|separator|>"]
-        )
-
-    #####################################
-    ########## SGL Program End ##########
-    #####################################
-
-    # Run requests
-    latency_list = []
-    output_throughput_list = []
-    accept_length_list = []
-    for _ in range(args.num_runs):
-        tic = time.perf_counter()
-        states = few_shot_gsm8k.run_batch(
-            arguments,
-            temperature=0,
-            max_new_tokens=2048,
-            num_threads=args.parallel,
-            progress_bar=True,
-        )
-        latency = time.perf_counter() - tic
-
-        preds = []
-        for i in range(len(states)):
-            preds.append(get_answer_value(states[i]["answer"]))
-
-        # Compute speed
-        num_output_tokens = sum(
-            s.get_meta_info("answer")["completion_tokens"] for s in states
-        )
-        output_throughput = num_output_tokens / latency
-
-        has_verify = "spec_verify_ct" in states[0].get_meta_info("answer")
-        if has_verify:
-            num_verify_tokens = sum(
-                s.get_meta_info("answer")["spec_verify_ct"] for s in states
-            )
-            if num_verify_tokens == 0:
-                accept_length = 1.0
-            else:
-                accept_length = num_output_tokens / num_verify_tokens
-        else:
-            accept_length = 1.0
-
-        latency_list.append(latency)
-        output_throughput_list.append(output_throughput)
-        accept_length_list.append(accept_length)
-
-    # Print results
-    print(f"Average Latency: {np.mean(latency_list):.3f} s")
-    print(f"Average Output throughput: {np.mean(output_throughput_list):.3f} token/s")
-    print(f"Average Accept length: {np.mean(accept_length_list):.3f}")
+    """Main entry point."""
+    benchmark = GSM8KBenchmark(args)
+    benchmark.run()
 
 
 if __name__ == "__main__":

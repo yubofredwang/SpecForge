@@ -1,84 +1,144 @@
-import argparse
-import time
+"""
+AIME benchmark evaluation script.
+"""
 
-import numpy as np
+import argparse
+import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 from datasets import load_dataset
-from sglang import set_default_backend
-from sglang.test.test_utils import (
-    add_common_sglang_args_and_parse,
-    select_sglang_backend,
-)
+from sglang.test.test_utils import add_common_sglang_args_and_parse
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from benchmarks.base_benchmark import BaseBenchmark
+from benchmarks.utils import create_simple_sgl_function
+
+
+def extract_aime_answer(output: str) -> Optional[str]:
+    """Extract final answer from AIME problem solution.
+
+    AIME answers are typically integers between 0 and 999, and are usually
+    in \boxed{} format.
+    """
+    # Try to find answer in \boxed{} format
+    boxed_pattern = r"\\boxed\{([^}]+)\}"
+    match = re.search(boxed_pattern, output)
+    if match:
+        answer = match.group(1).strip()
+        # Extract number from the boxed content
+        numbers = re.findall(r"\d+", answer)
+        if numbers:
+            return numbers[-1]  # Take the last number (usually the final answer)
+        return answer
+
+    # Try to find answer in \boxed format (without braces)
+    boxed_pattern2 = r"\\boxed\s+(\d+)"
+    match = re.search(boxed_pattern2, output)
+    if match:
+        return match.group(1).strip()
+
+    # Look for patterns like "The answer is 42" or "Answer: 123"
+    answer_patterns = [
+        r"(?:answer|Answer|ANSWER)[\s:]+(\d+)",
+        r"(?:final\s+answer|Final\s+Answer)[\s:]+(\d+)",
+        r"(?:is|equals?|=\s*)(\d+)\s*$",
+    ]
+    for pattern in answer_patterns:
+        matches = re.findall(pattern, output, re.IGNORECASE)
+        if matches:
+            return matches[-1].strip()
+
+    # Fallback: extract the last integer in the text
+    numbers = re.findall(r"\b(\d+)\b", output)
+    if numbers:
+        # Filter to reasonable AIME answer range (0-999)
+        valid_numbers = [n for n in numbers if 0 <= int(n) <= 999]
+        if valid_numbers:
+            return valid_numbers[-1]
+
+    return None
+
+
+class AIMEBenchmark(BaseBenchmark):
+    """AIME benchmark implementation."""
+
+    def load_data(self) -> Tuple[List[Dict[str, Any]], List[Optional[str]]]:
+        """Load and preprocess AIME dataset."""
+        dataset = load_dataset("Maxwell-Jia/AIME_2024")["train"]
+        questions = []
+        labels = []
+        for idx, q in enumerate(dataset):
+            if idx >= self.args.num_questions:
+                break
+            questions.append({"question": q["Problem"]})
+            # Extract answer from Answer field
+            answer = None
+            if "Answer" in q:
+                answer = str(q["Answer"]).strip()
+            elif "answer" in q:
+                answer = str(q["answer"]).strip()
+            labels.append(answer)
+        return questions, labels
+
+    def extract_answer(self, output: str, label: Optional[Any] = None) -> Optional[str]:
+        """Extract answer from model output."""
+        return extract_aime_answer(output)
+
+    def compute_accuracy(
+        self, predictions: List[Any], labels: List[Any]
+    ) -> Optional[float]:
+        """Compute accuracy for AIME by comparing numeric answers."""
+        if not labels or len(labels) == 0:
+            return None
+        if all(label is None for label in labels):
+            return None
+
+        correct = 0
+        valid_count = 0
+        for pred, label in zip(predictions, labels):
+            if label is not None:
+                valid_count += 1
+                if pred is not None:
+                    # Normalize answers for comparison
+                    pred_normalized = str(pred).strip()
+                    label_normalized = str(label).strip()
+                    # Try exact match first
+                    if pred_normalized == label_normalized:
+                        correct += 1
+                    else:
+                        # Try numeric comparison
+                        try:
+                            pred_num = int(pred_normalized)
+                            label_num = int(label_normalized)
+                            if pred_num == label_num:
+                                correct += 1
+                        except ValueError:
+                            pass
+
+        return correct / valid_count if valid_count > 0 else 0.0
+
+    def create_sgl_function(self):
+        """Create SGL function for AIME with reasoning prompt."""
+        return create_simple_sgl_function(
+            function_name="reasoning_gen",
+            answer_key="answer",
+            user_prefix="\nPlease reason step by step, and put your final answer within \\boxed{}.",
+            max_tokens=self.get_max_new_tokens(),
+        )
+
+    def get_max_new_tokens(self) -> int:
+        """AIME problems require more tokens."""
+        return 32768
 
 
 def main(args):
-    # Select backend
-    set_default_backend(select_sglang_backend(args))
-
-    # Read data
-    dataset = load_dataset("Maxwell-Jia/AIME_2024")["train"]
-    questions = [{"question": q["Problem"]} for q in dataset]
-
-    # Construct prompts
-    questions = questions[: args.num_questions]
-
-    #####################################
-    ######### SGL Program Begin #########
-    #####################################
-    import sglang as sgl
-
-    @sgl.function
-    def reasoning_gen(s, question: str):
-        s += sgl.user(
-            question
-            + "\nPlease reason step by step, and put your final answer within \boxed{}."
-        )
-        s += sgl.assistant(
-            sgl.gen(
-                "answer",
-            )
-        )
-
-    #####################################
-    ########## SGL Program End ##########
-    #####################################
-
-    # Run requests
-    latency_list = []
-    output_throughput_list = []
-    accept_length_list = []
-    for _ in range(args.num_runs):
-        tic = time.perf_counter()
-        states = reasoning_gen.run_batch(
-            questions,
-            temperature=0,
-            max_new_tokens=32768,
-            num_threads=args.parallel,
-            progress_bar=True,
-        )
-        latency = time.perf_counter() - tic
-
-        # Compute speed
-        num_output_tokens = sum(
-            s.get_meta_info("answer")["completion_tokens"] for s in states
-        )
-        output_throughput = num_output_tokens / latency
-
-        has_verify = "spec_verify_ct" in states[0].get_meta_info("answer")
-        if has_verify:
-            num_verify_tokens = sum(
-                s.get_meta_info("answer")["spec_verify_ct"] for s in states
-            )
-            if num_verify_tokens == 0:
-                accept_length = 1.0
-            else:
-                accept_length = num_output_tokens / num_verify_tokens
-        else:
-            accept_length = 1.0
-
-    # Print results
-    print(f"Average Latency: {np.mean(latency_list):.3f} s")
-    print(f"Average Output throughput: {np.mean(output_throughput_list):.3f} token/s")
-    print(f"Average Accept length: {np.mean(accept_length_list):.3f}")
+    """Main entry point."""
+    benchmark = AIMEBenchmark(args)
+    benchmark.run()
 
 
 if __name__ == "__main__":
