@@ -44,16 +44,34 @@ def parse_arguments():
     )
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=4096,
-        help="Maximum number of tokens (default: 4096)",
-    )
-    parser.add_argument(
         "--temperature",
         type=float,
         default=0.7,
         help="Temperature for sglang model server",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=None,
+        help="Nucleus sampling top_p (recommended: 0.8)",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Top-k sampling value sent via extra_body (recommended: 20)",
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=None,
+        help="Mapped to presence_penalty in the OpenAI API (recommended: 1.05)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4096,
+        help="Maximum number of tokens (default: 4096)",
     )
     parser.add_argument(
         "--concurrency",
@@ -99,14 +117,50 @@ def get_random_reasoning_effort() -> str:
     return random.choices(reasoning_efforts, weights=weights, k=1)[0]
 
 
+def compute_context_length(conversations: List[Dict[str, Any]]) -> int:
+    length = 0
+    for message in conversations:
+        content = message.get("content")
+        if isinstance(content, str):
+            length += len(content.split())
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        length += len(text.split())
+    return length
+
+
+def build_query_kwargs(args, messages, max_tokens=None):
+    effective_max_tokens = max_tokens if max_tokens is not None else args.max_tokens
+
+    query_kwargs = dict(
+        model=args.model,
+        messages=messages,
+        max_tokens=effective_max_tokens,
+        temperature=args.temperature,
+        stream=False,
+    )
+    if args.top_p is not None:
+        query_kwargs["top_p"] = args.top_p
+    if args.repetition_penalty is not None:
+        query_kwargs["presence_penalty"] = args.repetition_penalty
+    extra_body = {}
+    if args.top_k is not None:
+        extra_body["top_k"] = args.top_k
+    if extra_body:
+        query_kwargs["extra_body"] = extra_body
+    if args.is_gpt_oss:
+        query_kwargs["reasoning_effort"] = get_random_reasoning_effort()
+    return query_kwargs
+
+
 def call_sglang(
-    model: str,
-    max_tokens: int,
-    temperature: float,
+    args,
     server_address: str,
     data: List[Dict[str, Any]],
-    is_reasoning_model: bool,
-    is_gpt_oss: bool,
+    max_tokens=None,
 ) -> str:
     """Send a batch of prompts to sglang /v1/completions."""
     client = OpenAI(base_url=f"http://{server_address}/v1", api_key="None")
@@ -128,15 +182,7 @@ def call_sglang(
         elif message["role"] == "user":
             regenerated_messages.append(message)
 
-            query_kwargs = dict(
-                model=model,
-                messages=regenerated_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stream=False,
-            )
-            if is_gpt_oss:
-                query_kwargs["reasoning_effort"] = get_random_reasoning_effort()
+            query_kwargs = build_query_kwargs(args, regenerated_messages, max_tokens)
 
             try:
                 resp = client.chat.completions.create(**query_kwargs)
@@ -149,7 +195,7 @@ def call_sglang(
                 "role": "assistant",
                 "content": response_text,
             }
-            if is_reasoning_model:
+            if args.is_reasoning_model:
                 resp_msg["thinking"] = resp.choices[0].message.reasoning_content
             regenerated_messages.append(resp_msg)
         else:
@@ -190,13 +236,10 @@ def main():
             conversations=[{"role": "user", "content": "Hello, how are you?"}]
         )
         result = call_sglang(
-            args.model,
-            1,
-            args.temperature,
+            args,
             server_address,
             dummy_data,
-            args.is_reasoning_model,
-            args.is_gpt_oss,
+            max_tokens=1,
         )
         if result is not None:
             valid_server_addresses.append(server_address)
@@ -216,6 +259,11 @@ def main():
         f"Regenerating dataset and saving the output to {args.output_file_path} and error log to {error_file_path}"
     )
     print("-" * 50)
+
+    context_count = 0
+    context_token_sum = 0
+    context_token_min = None
+    context_token_max = 0
 
     # Create progress bar
     with open(args.input_file_path, "r") as input_file, open(
@@ -250,6 +298,17 @@ def main():
                                 json.dumps(regen_data, ensure_ascii=False) + "\n"
                             )
                         else:
+                            ctx_len = compute_context_length(
+                                regen_data.get("conversations", [])
+                            )
+                            context_count += 1
+                            context_token_sum += ctx_len
+                            if context_token_min is None:
+                                context_token_min = ctx_len
+                            else:
+                                context_token_min = min(context_token_min, ctx_len)
+                            context_token_max = max(context_token_max, ctx_len)
+
                             output_file_handle.write(
                                 json.dumps(regen_data, ensure_ascii=False) + "\n"
                             )
@@ -261,13 +320,9 @@ def main():
 
             req_future = executor.submit(
                 call_sglang,
-                args.model,
-                args.max_tokens,
-                args.temperature,
+                args,
                 server_address,
                 data,
-                args.is_reasoning_model,
-                args.is_gpt_oss,
             )
             waiting_queue[server_address].append(req_future)
             pbar.update(1)
@@ -281,11 +336,31 @@ def main():
                         json.dumps(regen_data, ensure_ascii=False) + "\n"
                     )
                 else:
+                    ctx_len = compute_context_length(
+                        regen_data.get("conversations", [])
+                    )
+                    context_count += 1
+                    context_token_sum += ctx_len
+                    if context_token_min is None:
+                        context_token_min = ctx_len
+                    else:
+                        context_token_min = min(context_token_min, ctx_len)
+                    context_token_max = max(context_token_max, ctx_len)
+
                     output_file_handle.write(
                         json.dumps(regen_data, ensure_ascii=False) + "\n"
                     )
 
     print(f"\nProcessing completed!")
+    if context_count > 0:
+        avg_len = context_token_sum / context_count
+        print("Context length statistics (token count over conversations):")
+        print(f"Number of successful examples: {context_count}")
+        print(f"Shortest context length: {context_token_min}")
+        print(f"Longest context length: {context_token_max}")
+        print(f"Average context length: {avg_len:.2f}")
+    else:
+        print("No successful examples to compute context length statistics.")
 
 
 if __name__ == "__main__":
