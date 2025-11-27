@@ -118,10 +118,15 @@ def get_random_reasoning_effort() -> str:
 
 
 def compute_context_length(conversations: List[Dict[str, Any]]) -> int:
+    """
+    This is a rough estimate of the context length measured in untokenized 
+    tokens.
+    """
     length = 0
     for message in conversations:
         content = message.get("content")
         if isinstance(content, str):
+            # {"role": "assistant", "content": "Hi, how can I help?"}
             length += len(content.split())
         elif isinstance(content, list):
             for part in content:
