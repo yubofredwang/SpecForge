@@ -53,19 +53,19 @@ def parse_arguments():
         "--top-p",
         type=float,
         default=None,
-        help="Nucleus sampling top_p (recommended: 0.8)",
+        help="Nucleus sampling top_p",
     )
     parser.add_argument(
         "--top-k",
         type=int,
         default=None,
-        help="Top-k sampling value sent via extra_body (recommended: 20)",
+        help="Top-k sampling value sent via extra_body",
     )
     parser.add_argument(
         "--repetition-penalty",
         type=float,
         default=None,
-        help="Mapped to presence_penalty in the OpenAI API (recommended: 1.05)",
+        help="Mapped to presence_penalty in the OpenAI API",
     )
     parser.add_argument(
         "--max-tokens",
