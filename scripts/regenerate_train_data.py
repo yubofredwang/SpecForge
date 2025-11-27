@@ -101,6 +101,12 @@ def parse_arguments():
         action="store_true",
         help="Whether the model is a GPT-OSS model",
     )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="The number of samples to regenerate, if not provided, all samples will be regenerated",
+    )
     return parser.parse_args()
 
 
@@ -264,11 +270,11 @@ def main():
         f"Regenerating dataset and saving the output to {args.output_file_path} and error log to {error_file_path}"
     )
     print("-" * 50)
-
-    context_count = 0
     context_token_sum = 0
     context_token_min = None
     context_token_max = 0
+    success_samples = 0
+    error_samples = 0
 
     # Create progress bar
     with open(args.input_file_path, "r") as input_file, open(
@@ -284,6 +290,12 @@ def main():
         start_server_index = 0
 
         for line in input_file:
+            if (
+                args.num_samples is not None
+                and success_samples + error_samples >= args.num_samples
+            ):
+                break
+
             data = json.loads(line.strip())
 
             # find server address with the least waiting requests
@@ -302,11 +314,11 @@ def main():
                             error_file_handle.write(
                                 json.dumps(regen_data, ensure_ascii=False) + "\n"
                             )
+                            error_samples += 1
                         else:
                             ctx_len = compute_context_length(
                                 regen_data.get("conversations", [])
                             )
-                            context_count += 1
                             context_token_sum += ctx_len
                             if context_token_min is None:
                                 context_token_min = ctx_len
@@ -317,6 +329,7 @@ def main():
                             output_file_handle.write(
                                 json.dumps(regen_data, ensure_ascii=False) + "\n"
                             )
+                            success_samples += 1
                         waiting_queue[server_address].remove(req_future)
                         finished_on_request = True
 
@@ -340,11 +353,11 @@ def main():
                     error_file_handle.write(
                         json.dumps(regen_data, ensure_ascii=False) + "\n"
                     )
+                    error_samples += 1
                 else:
                     ctx_len = compute_context_length(
                         regen_data.get("conversations", [])
                     )
-                    context_count += 1
                     context_token_sum += ctx_len
                     if context_token_min is None:
                         context_token_min = ctx_len
@@ -355,17 +368,22 @@ def main():
                     output_file_handle.write(
                         json.dumps(regen_data, ensure_ascii=False) + "\n"
                     )
+                    success_samples += 1
 
     print(f"\nProcessing completed!")
-    if context_count > 0:
-        avg_len = context_token_sum / context_count
+    if success_samples > 0:
+        avg_len = context_token_sum / success_samples
         print("Context length statistics (token count over conversations):")
-        print(f"Number of successful examples: {context_count}")
+        print(f"Number of successful examples: {success_samples}")
         print(f"Shortest context length: {context_token_min}")
         print(f"Longest context length: {context_token_max}")
         print(f"Average context length: {avg_len:.2f}")
     else:
         print("No successful examples to compute context length statistics.")
+
+    print(
+        f"\nProcessing completed! {success_samples} samples regenerated, {error_samples} samples failed."
+    )
 
 
 if __name__ == "__main__":
