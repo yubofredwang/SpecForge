@@ -329,11 +329,6 @@ class LlamaModel(LlamaPreTrainedModel):
 
         all_hidden_states = ()
         for idx, decoder_layer in enumerate(self.layers):
-            if layers_to_output_hidden_states is None:
-                all_hidden_states += (hidden_states,)
-            elif idx in layers_to_output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
@@ -343,6 +338,10 @@ class LlamaModel(LlamaPreTrainedModel):
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
+            if layers_to_output_hidden_states is None:
+                all_hidden_states += (hidden_states,)
+            elif idx in layers_to_output_hidden_states:
+                all_hidden_states += (hidden_states,)
 
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(
