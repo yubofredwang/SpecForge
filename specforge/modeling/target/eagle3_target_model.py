@@ -481,6 +481,7 @@ class CustomEagle3TargetModel(Eagle3TargetModel):
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            output_hidden_states=True,
             layers_to_output_hidden_states=self.aux_hidden_states_layers,
             use_cache=False,
         )

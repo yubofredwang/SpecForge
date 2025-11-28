@@ -14,7 +14,7 @@
 # limitations under the License.
 
 
-from typing import Callable, Optional, Union, List
+from typing import Callable, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -343,12 +343,7 @@ class Phi3Model(Phi3PreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         all_hidden_states = ()
-        for idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            if layers_to_output_hidden_states is None:
-                all_hidden_states += (hidden_states,)
-            elif idx in layers_to_output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
+        for idx, decoder_layer in enumerate(self.layers):
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
@@ -359,7 +354,15 @@ class Phi3Model(Phi3PreTrainedModel):
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
+
+            if output_hidden_states:
+                if layers_to_output_hidden_states is None:
+                    all_hidden_states += (hidden_states,)
+                elif idx in layers_to_output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+
         hidden_states = self.norm(hidden_states)
+
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values if use_cache else None,

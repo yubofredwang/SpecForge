@@ -447,13 +447,6 @@ class Qwen3Model(Qwen3PreTrainedModel):
         all_self_attns = () if output_attentions else None
 
         for idx, decoder_layer in enumerate(self.layers):
-            if output_hidden_states:
-                if (
-                    layers_to_output_hidden_states is None
-                    or idx in layers_to_output_hidden_states
-                ):
-                    all_hidden_states += (hidden_states,)
-
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask_mapping[decoder_layer.attention_type],
@@ -468,15 +461,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
             hidden_states = layer_outputs[0]
 
+            if output_hidden_states:
+                if layers_to_output_hidden_states is None:
+                    all_hidden_states += (hidden_states,)
+                elif idx in layers_to_output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
-
-        # add hidden states from the last decoder layer
-        if output_hidden_states:
-            if layers_to_output_hidden_states is None:
-                all_hidden_states += (hidden_states,)
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,

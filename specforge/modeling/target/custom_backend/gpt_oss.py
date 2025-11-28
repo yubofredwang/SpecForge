@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, Optional, Union, List
+from typing import Callable, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -36,7 +36,7 @@ from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssRMSNorm
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
-from transformers.utils.generic import OutputRecorder, check_model_inputs
+from transformers.utils.generic import check_model_inputs
 
 from specforge.distributed import get_tp_group, shard_tensor
 from specforge.layers import (
@@ -644,11 +644,6 @@ class GptOssModel(GptOssPreTrainedModel):
 
         all_hidden_states = ()
         for idx, decoder_layer in enumerate(self.layers):
-            if layers_to_output_hidden_states is None:
-                all_hidden_states += (hidden_states,)
-            elif idx in layers_to_output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask_mapping[decoder_layer.attention_type],
@@ -659,7 +654,13 @@ class GptOssModel(GptOssPreTrainedModel):
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
+            if layers_to_output_hidden_states is None:
+                all_hidden_states += (hidden_states,)
+            elif idx in layers_to_output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
         hidden_states = self.norm(hidden_states)
+
         return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
