@@ -33,7 +33,7 @@ import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from openai import OpenAI
 from tqdm import tqdm
@@ -273,9 +273,7 @@ def wait_for_healthy_servers(args) -> List[str]:
             print("-" * 50)
             return valid_server_addresses
 
-        print(
-            "No valid server available, waiting for servers to become healthy..."
-        )
+        print("No valid server available, waiting for servers to become healthy...")
         time.sleep(5)
 
 
@@ -361,9 +359,7 @@ def main():
     ) -> List[Dict[str, Any]]:
         nonlocal success_samples, error_samples, retry_counts
 
-        waiting_queue: Dict[str, List] = {
-            addr: [] for addr in valid_server_addresses
-        }
+        waiting_queue: Dict[str, List] = {addr: [] for addr in valid_server_addresses}
         pbar = tqdm(total=len(data_batch), desc="Processing")
         start_server_index = 0
         retry_records: List[Dict[str, Any]] = []
@@ -479,9 +475,7 @@ def main():
 
     with open(error_file_path, "w") as error_file_handle:
         while remaining_data:
-            with open(
-                args.output_file_path, output_open_mode
-            ) as output_file_handle:
+            with open(args.output_file_path, output_open_mode) as output_file_handle:
                 retry_records = run_pass(
                     remaining_data,
                     valid_server_addresses,
