@@ -173,8 +173,7 @@ class HFEagle3TargetModel(Eagle3TargetModel):
         target = outputs.logits
         target = padding(target, left=False)
         input_ids = padding(input_ids, left=False)
-        loss_mask = loss_mask[..., None]
-        loss_mask = loss_mask.to(target.device)
+        loss_mask = loss_mask[..., None].to(target.device)
 
         return Eagle3TargetOutput(
             hidden_states=hidden_states,
