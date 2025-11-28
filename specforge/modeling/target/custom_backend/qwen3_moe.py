@@ -599,9 +599,12 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         all_self_attns = () if output_attentions else None
         all_router_logits = () if output_router_logits else None
 
-        for decoder_layer in self.layers:
+        for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
-                all_hidden_states += (hidden_states,)
+                if layers_to_output_hidden_states is None:
+                    all_hidden_states += (hidden_states,)
+                elif idx in layers_to_output_hidden_states:
+                    all_hidden_states += (hidden_states,)
 
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -628,7 +631,8 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+            if layers_to_output_hidden_states is None:
+                all_hidden_states += (hidden_states,)
 
         return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,

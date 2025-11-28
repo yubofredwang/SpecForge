@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Union, List
 
 import torch
 import torch.distributed as dist
@@ -529,11 +529,7 @@ class GptOssPreTrainedModel(PreTrainedModel):
 
     _can_compile_fullgraph = True
     _supports_attention_backend = True
-    _can_record_outputs = {
-        "router_logits": OutputRecorder(GptOssTopKRouter, index=0),
-        "hidden_states": GptOssDecoderLayer,
-        "attentions": GptOssAttention,
-    }
+    _can_record_outputs = {}
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
     _supports_flash_attention = False
     _supports_flex_attention = False
@@ -607,6 +603,10 @@ class GptOssModel(GptOssPreTrainedModel):
                 "You must specify exactly one of input_ids or inputs_embeds"
             )
 
+        layers_to_output_hidden_states: Optional[List[int]] = kwargs.pop(
+            "layers_to_output_hidden_states", None
+        )
+
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
 
@@ -642,7 +642,13 @@ class GptOssModel(GptOssPreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers:
+        all_hidden_states = ()
+        for idx, decoder_layer in enumerate(self.layers):
+            if layers_to_output_hidden_states is None:
+                all_hidden_states += (hidden_states,)
+            elif idx in layers_to_output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask_mapping[decoder_layer.attention_type],
@@ -657,6 +663,7 @@ class GptOssModel(GptOssPreTrainedModel):
         return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
+            hidden_states=all_hidden_states,
         )
 
 
