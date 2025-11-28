@@ -508,10 +508,12 @@ class Llama4TextModel(Llama4PreTrainedModel):
                 position_embeddings=freq_cis,
                 **kwargs,
             )
-            if layers_to_output_hidden_states is None:
+            if (
+                layers_to_output_hidden_states is None
+                or idx in layers_to_output_hidden_states
+            ):
                 all_hidden_states += (hidden_states,)
-            elif idx in layers_to_output_hidden_states:
-                all_hidden_states += (hidden_states,)
+
         hidden_states = self.norm(hidden_states)
 
         return BaseModelOutputWithPast(

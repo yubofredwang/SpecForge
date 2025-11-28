@@ -356,9 +356,10 @@ class Phi3Model(Phi3PreTrainedModel):
             )
 
             if output_hidden_states:
-                if layers_to_output_hidden_states is None:
-                    all_hidden_states += (hidden_states,)
-                elif idx in layers_to_output_hidden_states:
+                if (
+                    layers_to_output_hidden_states is None
+                    or idx in layers_to_output_hidden_states
+                ):
                     all_hidden_states += (hidden_states,)
 
         hidden_states = self.norm(hidden_states)

@@ -337,11 +337,6 @@ class Qwen2Model(Qwen2PreTrainedModel):
         layers_to_output_hidden_states = flash_attn_kwargs.pop(
             "layers_to_output_hidden_states", None
         )
-        layers_to_output_hidden_states_set = (
-            set(layers_to_output_hidden_states)
-            if layers_to_output_hidden_states is not None
-            else None
-        )
 
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
@@ -425,9 +420,10 @@ class Qwen2Model(Qwen2PreTrainedModel):
             hidden_states = layer_outputs[0]
 
             if output_hidden_states:
-                if layers_to_output_hidden_states is None:
-                    all_hidden_states += (hidden_states,)
-                elif idx in layers_to_output_hidden_states:
+                if (
+                    layers_to_output_hidden_states is None
+                    or idx in layers_to_output_hidden_states
+                ):
                     all_hidden_states += (hidden_states,)
 
             if output_attentions:
