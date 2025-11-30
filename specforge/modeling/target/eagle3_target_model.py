@@ -58,50 +58,16 @@ class Eagle3TargetModel(ABC):
         Initialize the target model backend from a pretrained model path.
         """
 
-    @torch.no_grad()
+    @abstractmethod
     def generate_eagle3_data(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         loss_mask: torch.Tensor,
     ) -> Eagle3TargetOutput:
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            use_cache=False,
-        )
-
-        # extract the aux hidden states
-        # output_hidden_states = True will return the embedding output as well
-        # so we have an offset of 1
-        offset = 1
-        low_aux_layer = self.aux_hidden_states_layers[0] + offset
-        mid_aux_layer = self.aux_hidden_states_layers[1] + offset
-        last_aux_layer = self.aux_hidden_states_layers[2] + offset
-
-        hidden_states0 = outputs.hidden_states[low_aux_layer]
-        hidden_states1 = outputs.hidden_states[mid_aux_layer]
-        hidden_states2 = outputs.hidden_states[last_aux_layer]
-
-        hidden_states = torch.cat(
-            (hidden_states0, hidden_states1, hidden_states2), dim=-1
-        )
-
-        # apply pading
-        target = outputs.logits
-        target = padding(target, left=False)
-        input_ids = padding(input_ids, left=False)
-        loss_mask = loss_mask[..., None]
-        loss_mask = loss_mask.to(target.device)
-
-        return Eagle3TargetOutput(
-            hidden_states=hidden_states,
-            target=target,
-            loss_mask=loss_mask,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
+        """
+        Generate the eagle3 data from the target model.
+        """
 
     def set_aux_hidden_states_layers(
         self, aux_hidden_states_layers: Optional[List[int]] = None
@@ -166,6 +132,56 @@ class HFEagle3TargetModel(Eagle3TargetModel):
             **kwargs,
         )
         return cls(target_model)
+
+    @torch.no_grad()
+    def generate_eagle3_data(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        loss_mask: torch.Tensor,
+    ) -> Eagle3TargetOutput:
+        """
+        HF backend does not support customizing which layers to capture the aux hidden states.
+        We capture all hidden states and layers
+        """
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            output_attentions=False,  # Explicit
+            output_router_logits=False,  # Explicit
+            use_cache=False,
+        )
+
+        # extract the aux hidden states
+        # output_hidden_states = True will return the embedding output as well
+        # so we have an offset of 1
+        offset = 1
+        low_aux_layer = self.aux_hidden_states_layers[0] + offset
+        mid_aux_layer = self.aux_hidden_states_layers[1] + offset
+        last_aux_layer = self.aux_hidden_states_layers[2] + offset
+
+        hidden_states0 = outputs.hidden_states[low_aux_layer]
+        hidden_states1 = outputs.hidden_states[mid_aux_layer]
+        hidden_states2 = outputs.hidden_states[last_aux_layer]
+
+        hidden_states = torch.cat(
+            (hidden_states0, hidden_states1, hidden_states2), dim=-1
+        )
+
+        # apply pading
+        target = outputs.logits
+        target = padding(target, left=False)
+        input_ids = padding(input_ids, left=False)
+        loss_mask = loss_mask[..., None].to(target.device)
+
+        return Eagle3TargetOutput(
+            hidden_states=hidden_states,
+            target=target,
+            loss_mask=loss_mask,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
 
 
 class SGLangEagle3TargetModel(Eagle3TargetModel):
@@ -453,6 +469,38 @@ class CustomEagle3TargetModel(Eagle3TargetModel):
             **kwargs,
         )
         return cls(target_model)
+
+    @torch.no_grad()
+    def generate_eagle3_data(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        loss_mask: torch.Tensor,
+    ) -> Eagle3TargetOutput:
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            layers_to_output_hidden_states=self.aux_hidden_states_layers,
+            use_cache=False,
+        )
+
+        # For custom backends, the model implementation is responsible for only
+        # returning the requested layers in `outputs.hidden_states`.
+        hidden_states = torch.cat(outputs.hidden_states, dim=-1)
+
+        target = outputs.logits
+        target = padding(target, left=False)
+        input_ids = padding(input_ids, left=False)
+        loss_mask = loss_mask[..., None].to(target.device)
+
+        return Eagle3TargetOutput(
+            hidden_states=hidden_states,
+            target=target,
+            loss_mask=loss_mask,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
 
 
 def get_eagle3_target_model(
